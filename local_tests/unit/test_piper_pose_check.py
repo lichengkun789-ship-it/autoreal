@@ -66,6 +66,17 @@ def test_pose_check_passes_matching_independent_readings():
     assert receipt["maximum_reference_error_deg"] == 0.0
 
 
+def test_pose_check_records_non_blocking_skip_without_claiming_pass():
+    receipt = build_pose_check_receipt(
+        probe_receipt(),
+        can_names={"left": "can_l", "right": "can_r"},
+        skip_reason="No independent pendant or angle display is available.",
+    )
+    assert receipt["status"] == "skipped"
+    assert receipt["independent_confirmation"]["blocking"] is False
+    assert receipt["motion_commands_sent"] is False
+
+
 def test_pose_check_rejects_large_reference_error():
     values = confirmation()
     values["arms"]["right"]["joints_deg"][2] += 3.0

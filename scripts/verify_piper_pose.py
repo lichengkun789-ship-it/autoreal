@@ -42,7 +42,13 @@ def main() -> int:
         default=os.environ.get("RAX_BACKEND_OPTIONS") or None,
         help="Piper backend JSON (default: $RAX_BACKEND_OPTIONS)",
     )
-    parser.add_argument("--confirmation", type=Path, help="Independent operator readings JSON")
+    verification = parser.add_mutually_exclusive_group()
+    verification.add_argument("--confirmation", type=Path, help="Independent operator readings JSON")
+    verification.add_argument(
+        "--skip-independent-confirmation",
+        metavar="REASON",
+        help="Record why no independent angle source is available; this does not mark the check passed",
+    )
     parser.add_argument("--tolerance-deg", type=float, default=2.0)
     parser.add_argument("--stability-tolerance-deg", type=float, default=0.2)
     parser.add_argument("--samples", type=int, default=5)
@@ -62,6 +68,7 @@ def main() -> int:
             probe,
             can_names=can_names,
             confirmation=confirmation,
+            skip_reason=args.skip_independent_confirmation,
             tolerance_deg=args.tolerance_deg,
             stability_tolerance_deg=args.stability_tolerance_deg,
         )

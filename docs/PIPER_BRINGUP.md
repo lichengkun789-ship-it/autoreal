@@ -7,9 +7,11 @@ motion merely because a unit test passes.
 2. Run `python scripts/probe_piper_readonly.py --backend-options FILE`; require a
    `passed` receipt and confirm `motion_commands_sent` is `false`.
 3. Start a read-only mock session and run the full automated test suite.
-4. Run `python scripts/verify_piper_pose.py --backend-options FILE`, collect joint
-   readings from an independent display, then rerun with `--confirmation FILE`. Require
-   a `passed` `piper_pose_cross_check` receipt.
+4. If an independent joint display is available, run `python
+   scripts/verify_piper_pose.py --backend-options FILE`, collect its readings, then
+   rerun with `--confirmation FILE`. Otherwise use `--skip-independent-confirmation
+   REASON` and retain the explicit `skipped` receipt. This optional cross-check does
+   not replace the required passive probe in step 2.
 5. Review `docs/PIPER_STOP_AND_HOLD.md` and characterize the operator stop path before
    exposing any motion tool. An SDK emergency stop is not a static hold.
 6. Measure stop latency and overrun from a very small, low-speed movement.

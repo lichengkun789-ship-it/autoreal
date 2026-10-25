@@ -42,7 +42,9 @@ behavior of the software emergency stop:
 
 ## Gates before minimum motion
 
-- A `piper_pose_cross_check` receipt is `passed` using an independent joint display.
+- The passive Piper probe is `passed`. When an independent joint display exists, the
+  `piper_pose_cross_check` is also `passed`; otherwise its non-blocking `skipped`
+  receipt records why that stronger evidence is unavailable.
 - The operator records the exact physical emergency-stop behavior for this hardware.
 - The operator verifies that neither physical nor software stop creates an unsafe
   gravity-driven path.

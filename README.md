@@ -94,6 +94,16 @@ python scripts/verify_piper_pose.py --backend-options "$RAX_BACKEND_OPTIONS" \
   --confirmation /path/to/operator-pose-confirmation.json
 ```
 
+When no independent display exists, record that limitation without claiming a pass:
+
+```bash
+python scripts/verify_piper_pose.py --backend-options "$RAX_BACKEND_OPTIONS" \
+  --skip-independent-confirmation "No independent pendant or angle display is available."
+```
+
+This optional cross-check does not block bring-up when the required passive probe has
+passed.
+
 Read `docs/PIPER_STOP_AND_HOLD.md` before adding motion. Piper software emergency stop,
 motor disable, reset, and position hold have materially different behavior.
 

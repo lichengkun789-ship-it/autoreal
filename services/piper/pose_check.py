@@ -55,6 +55,7 @@ def build_pose_check_receipt(
     *,
     can_names: dict[str, str],
     confirmation: dict | None = None,
+    skip_reason: str | None = None,
     tolerance_deg: float = 2.0,
     stability_tolerance_deg: float = 0.2,
 ) -> dict:
@@ -63,6 +64,10 @@ def build_pose_check_receipt(
         raise ValueError("pose tolerances must be positive")
     if set(can_names) != set(SIDES):
         raise ValueError("can_names must define exactly left and right")
+    if confirmation is not None and skip_reason is not None:
+        raise ValueError("confirmation and skip_reason are mutually exclusive")
+    if skip_reason is not None and not skip_reason.strip():
+        raise ValueError("skip_reason must be a non-empty string")
 
     samples = probe_receipt.get("samples", [])
     receipt = {
@@ -114,6 +119,15 @@ def build_pose_check_receipt(
         receipt["failure_reasons"] = [
             f"pose changed by {maximum_drift:.6f} deg during capture"
         ]
+        return receipt
+
+    if skip_reason is not None:
+        receipt["status"] = "skipped"
+        receipt["independent_confirmation"] = {
+            "status": "skipped",
+            "reason": skip_reason.strip(),
+            "blocking": False,
+        }
         return receipt
 
     if confirmation is None:
