@@ -12,9 +12,11 @@ motion merely because a unit test passes.
    rerun with `--confirmation FILE`. Otherwise use `--skip-independent-confirmation
    REASON` and retain the explicit `skipped` receipt. This optional cross-check does
    not replace the required passive probe in step 2.
-5. Review `docs/PIPER_STOP_AND_HOLD.md` and characterize the operator stop path before
-   exposing any motion tool. An SDK emergency stop is not a static hold.
-6. Measure stop latency and overrun from a very small, low-speed movement.
+5. Review `docs/PIPER_STOP_AND_HOLD.md`, fill a private copy of
+   `examples/piper_stop_confirmation.json`, and require a `passed` receipt from
+   `scripts/verify_piper_stop_plan.py`. An SDK emergency stop is not a static hold.
+6. Implement the latched position-hold path with fake interfaces, then measure hold
+   latency and overrun from a very small, low-speed movement.
 7. Characterize one arm at a time, returning to the starting pose after every move.
 8. Add backend motion checks and tests using a fake SDK interface.
 9. Expose motion tools only after disarm-during-motion and stale-feedback tests pass.

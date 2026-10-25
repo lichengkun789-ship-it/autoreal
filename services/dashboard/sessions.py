@@ -288,7 +288,7 @@ class Sessions:
         return {'disarmed': disarmed, 'hold': self.hold()}
 
     def hold(self):
-        return 'disarmed; the active backend re-checks operator arming during motion'
+        return 'not asserted; disarm revokes authorization but is not a physical hold'
 
     # ----- robot ---------------------------------------------------------------------------
     def robot(self):

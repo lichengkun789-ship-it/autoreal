@@ -119,7 +119,7 @@ def test_read_only_backend_cannot_be_armed_and_can_be_disarmed(dashboard, artifa
     assert status == 409 and 'exposes no motion tools' in value['error']
     status, value = call(base, f'/api/session/{session_id}/disarm', {})
     assert status == 200 and value['motion']['armed'] is False
-    assert 'active backend' in value['hold']
+    assert 'not a physical hold' in value['hold']
 
 
 def test_disarm_all(dashboard):

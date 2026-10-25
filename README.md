@@ -107,6 +107,19 @@ passed.
 Read `docs/PIPER_STOP_AND_HOLD.md` before adding motion. Piper software emergency stop,
 motor disable, reset, and position hold have materially different behavior.
 
+Record the operator-owned emergency path and manual recovery agreement without sending
+any CAN frame:
+
+```bash
+python scripts/verify_piper_stop_plan.py
+python scripts/verify_piper_stop_plan.py \
+  --confirmation /path/to/piper-stop-confirmation.json
+```
+
+Use a private copy of `examples/piper_stop_confirmation.json`; do not commit a receipt
+containing site or operator details. A passed receipt confirms the static protocol but
+does not authorize motion or claim that position hold has been characterized.
+
 ## Adding tasks
 
 Copy `tasks/_template/` to `tasks/<task_id>/`. Keep robot-independent success criteria

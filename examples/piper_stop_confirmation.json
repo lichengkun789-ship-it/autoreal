@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "operator": "REPLACE_ME",
+  "robot_asset_id": "REPLACE_ME",
+  "physical_estop": {
+    "location": "REPLACE_ME",
+    "reachable_during_test": false,
+    "robot_mechanically_supported": false,
+    "descent_envelope_clear": false,
+    "activation_tested_on_this_robot": false,
+    "reset_requires_deliberate_operator_action": false,
+    "observed_behavior": "REPLACE_ME"
+  },
+  "acknowledgements": {
+    "software_estop_is_not_hold": false,
+    "disable_is_not_hold": false,
+    "no_automatic_reset_or_enable": false,
+    "recovery_returns_to_read_only": false,
+    "new_arming_lease_after_recovery": false
+  },
+  "notes": ""
+}
