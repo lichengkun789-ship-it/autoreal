@@ -99,7 +99,8 @@ def credential(deployed):
     return Credential(value['provider'], key_file=value['key_file'], base_url=value.get('base_url'))
 
 
-def deploy(config, *, binary=None, model=None, key_file=None, base_url=None, gemini_key_file=None):
+def deploy(config, *, binary=None, model=None, key_file=None, base_url=None, gemini_key_file=None,
+           disable_shell=False):
     if config.agent_cli != 'dsh':
         raise ValueError('DeepSeek launcher requires agent_cli=dsh')
     binary = dsh_binary(binary)
@@ -117,13 +118,15 @@ def deploy(config, *, binary=None, model=None, key_file=None, base_url=None, gem
         'agent_cli': 'dsh', 'provider': config.agent_provider, 'model': model,
         **login.record(), 'binary': str(binary), 'node': str(node),
         'gemini_key_file': str(gemini_key_file) if gemini_key_file else None,
+        'disable_shell': bool(disable_shell),
     })
     write_private_json(root/'configuration.json', config.to_dict())
     write_private_json(root/'workspace-manifest.json',
                        populate_workspace(config, workspace, gemini=bool(gemini_key_file)))
     deployed = {'root': root, 'workspace': workspace, 'dsh_home': home, 'dsh': binary,
                 'node': node, 'model': model, 'configuration': root/'configuration.json',
-                'login': root/LOGIN_FILE, 'socket': socket_path(root), 'resume_session': None}
+                'login': root/LOGIN_FILE, 'socket': socket_path(root), 'resume_session': None,
+                'disable_shell': bool(disable_shell)}
     write_home(config, deployed)
     return deployed
 
@@ -135,7 +138,8 @@ def redeploy(config, *, binary=None):
     deployed = {'root': root, 'workspace': root/WORKSPACE_NAME, 'dsh_home': root/HOME_NAME,
                 'dsh': active_binary, 'node': installed_node(active_binary), 'model': value['model'],
                 'configuration': root/'configuration.json', 'login': root/LOGIN_FILE,
-                'socket': socket_path(root), 'resume_session': latest_session(root/HOME_NAME)}
+                'socket': socket_path(root), 'resume_session': latest_session(root/HOME_NAME),
+                'disable_shell': bool(value.get('disable_shell', False))}
     for key in ('workspace', 'dsh_home', 'configuration', 'login'):
         if not Path(deployed[key]).exists():
             raise FileNotFoundError(f'Cannot resume: {deployed[key]} is missing')
@@ -185,9 +189,11 @@ def patches(config, deployed, socket):
                 'toolCallTimeoutMs': (config.session_seconds + 300) * 1000,
                 'failOnStartupError': True}}]},
     ]
-    disabled = ('tool-web', 'tool-subagent', 'tool-subagent-fork', 'tool-subagent-control',
+    disabled = ['tool-web', 'tool-subagent', 'tool-subagent-fork', 'tool-subagent-control',
                 'tool-subagent-list-agents', 'workflow-ptc', 'tool-workflow',
-                'tool-plugin-manager', 'plugin-manager', 'session-title-llm', 'tool-goal', 'plan-mode')
+                'tool-plugin-manager', 'plugin-manager', 'session-title-llm', 'tool-goal', 'plan-mode']
+    if deployed.get('disable_shell'):
+        disabled.extend(('tool-bash', 'tool-pwsh', 'tool-jobs'))
     return [*rows, *({'id': name, 'disabled': True} for name in disabled)]
 
 
@@ -375,6 +381,8 @@ def main():
     parser.add_argument('--gemini-key-file', type=Path)
     parser.add_argument('--no-gemini', action='store_true')
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--disable-shell', action='store_true',
+                        help='Remove shell and background-job tools from the Agent surface')
     parser.add_argument('--exec-prompt')
     parser.add_argument('--non-interactive', action='store_true',
                         help='Accepted for the common launcher; DSH is always headless')
@@ -406,7 +414,8 @@ def main():
             else:
                 deployed = deploy(config, binary=args.agent_binary, model=args.agent_model,
                     key_file=args.key_file or default_key(config.agent_provider),
-                    base_url=args.agent_base_url, gemini_key_file=gemini_key)
+                    base_url=args.agent_base_url, gemini_key_file=gemini_key,
+                    disable_shell=args.disable_shell)
             if args.prepare_only:
                 print(json.dumps({key: str(value) for key, value in deployed.items()}, indent=2))
                 lifecycle['status'] = 'prepared-only'

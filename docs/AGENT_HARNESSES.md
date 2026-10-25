@@ -97,6 +97,9 @@ commissioning gates have passed.
 - Robot tools are available only through the private session MCP socket.
 - Piper motion remains controlled by backend receipts, allowlists, arming leases, and
   per-session budgets, independent of the harness.
+- `scripts/run_piper_agent_test.py` starts DSH commissioning with shell and background
+  job tools disabled; general non-commissioning sessions keep the bubblewrap-confined
+  shell.
 
 Codex CLI and Kimi Code are available in current upstream RAX simulation branches but
 have not yet been ported or validated in AutoRAX `real/piper`.

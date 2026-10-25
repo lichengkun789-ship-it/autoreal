@@ -133,6 +133,11 @@ hold, the model process exits successfully, and the session is disarmed. Normal 
 model failure, and `Ctrl+C` all execute the disarm path; the short arming lease remains
 the fallback for an uncatchable host-process failure.
 
+For DeepSeek Harness commissioning, the runner also removes Bash, PowerShell, and
+background-job tools from the model surface. General research sessions retain their
+sandboxed shell, but the first physical motion test needs only file reads and MCP robot
+tools.
+
 The summary is written to `<session>/piper-agent-commissioning.json`; detailed robot
 evidence remains under `<session>/piper-motion/`.
 

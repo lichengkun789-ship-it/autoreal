@@ -110,7 +110,7 @@ def _motion_evidence(root: Path) -> tuple[list[dict], list[dict], list[str]]:
     return requests, receipts, [str(path) for path in receipt_paths]
 
 
-def _launcher_command(config_path: Path, key_file: Path | None) -> list[str]:
+def _launcher_command(config: Configuration, config_path: Path, key_file: Path | None) -> list[str]:
     command = [
         sys.executable,
         "-m",
@@ -120,6 +120,8 @@ def _launcher_command(config_path: Path, key_file: Path | None) -> list[str]:
         "--non-interactive",
         "--no-gemini",
     ]
+    if config.agent_cli == "dsh":
+        command.append("--disable-shell")
     if key_file is not None:
         command.extend(("--key-file", str(key_file)))
     return command
@@ -139,7 +141,7 @@ def run_trial(
     interrupted = False
     arming.write(config.root, True, minutes=arming_minutes)
     try:
-        completed = run_launcher(_launcher_command(config_path, key_file), cwd=PROJECT)
+        completed = run_launcher(_launcher_command(config, config_path, key_file), cwd=PROJECT)
         returncode = completed.returncode
     except KeyboardInterrupt:
         interrupted = True

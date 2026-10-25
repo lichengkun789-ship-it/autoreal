@@ -79,6 +79,26 @@ def test_deploy_builds_dsh_profile_without_exposing_key(tmp_path, monkeypatch):
     assert str(key) not in environment.values()
 
 
+def test_commissioning_profile_can_remove_shell_tools(tmp_path, monkeypatch):
+    binary = fake_dsh(tmp_path)
+    node = tmp_path/'node24'
+    node.write_text('')
+    monkeypatch.setattr(launcher, 'installed_node', lambda _: node)
+    key = private(tmp_path/'deepseek.key')
+    config = configuration(tmp_path, provider='deepseek-api', agent_cli='dsh')
+    deployed = launcher.deploy(
+        config, binary=binary, key_file=key, disable_shell=True
+    )
+
+    login = json.loads((config.root/'agent-login.json').read_text())
+    assert login['disable_shell'] is True
+    rows = json.loads(
+        (deployed['dsh_home']/'profiles/headless/cordis.patch.yml').read_text()
+    )
+    disabled = {row['id'] for row in rows if row.get('disabled') is True}
+    assert {'tool-bash', 'tool-pwsh', 'tool-jobs'} <= disabled
+
+
 def test_native_events_record_resume_identity_and_dashboard_usage(tmp_path):
     home = tmp_path/'dsh-home'
     home.mkdir()
