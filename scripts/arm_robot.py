@@ -32,11 +32,24 @@ def main():
     if not (root/'operator-input.json').is_file():
         parser.error(f'{root} is not a session directory')
     if args.action == 'arm':
-        from services.workspace.setup import ROBOT_FACTS
+        from types import SimpleNamespace
+        from services.workspace.setup import Setup
         config = json.loads((root/'operator-input.json').read_text())
-        if not ROBOT_FACTS.get(config.get('robot'), {}).get('motion_available'):
+        setup = Setup.from_config(SimpleNamespace(
+            robot=config.get('robot'),
+            task=config.get('task'),
+            observation_profile=config.get('observation_profile', 'state-only'),
+            subagents=config.get('subagents', 0),
+            backend_options=config.get('backend_options') or {},
+        ), gemini=False)
+        if not setup.motion_available:
             parser.error(f"{config.get('robot')} backend exposes no motion tools in this milestone")
-        if not args.yes and input('Person at the emergency stop and workspace clear? Type ARM: ').strip() != 'ARM':
+        prompt = (
+            'Operator at the keyboard, workspace clear, and software-hold limits acknowledged? Type ARM: '
+            if config.get('robot') == 'piper'
+            else 'Person at the emergency stop and workspace clear? Type ARM: '
+        )
+        if not args.yes and input(prompt).strip() != 'ARM':
             print('not armed')
             return
         arming.write(root, True, minutes=args.minutes)

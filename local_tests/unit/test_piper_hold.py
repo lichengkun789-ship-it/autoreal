@@ -68,7 +68,7 @@ def controller(*, reader=None, left=None, right=None):
 def arm(value, lease="lease-1"):
     return value.operator_arm_for_characterization(
         operator_lease_id=lease,
-        stop_plan_passed=True,
+        operator_protocol_acknowledged=True,
         passive_probe_passed=True,
     )
 
@@ -157,10 +157,10 @@ def test_manual_recovery_returns_only_to_read_only_and_needs_new_lease():
 
 def test_characterization_arm_is_fail_closed_and_sends_no_sdk_commands():
     value, interfaces = controller()
-    with pytest.raises(PermissionError, match="stop plan"):
+    with pytest.raises(PermissionError, match="operator protocol"):
         value.operator_arm_for_characterization(
             operator_lease_id="lease-1",
-            stop_plan_passed=False,
+            operator_protocol_acknowledged=False,
             passive_probe_passed=True,
         )
     assert value.state == READ_ONLY
@@ -177,3 +177,20 @@ def test_command_adapter_rejects_bad_values_before_calling_sdk():
     assert not hasattr(value, "reset")
     assert not hasattr(value, "enable")
     assert not hasattr(value, "emergency_stop")
+
+
+def test_recorded_last_target_is_reused_for_only_the_selected_arm():
+    value, interfaces = controller()
+    arm(value)
+    targets = {
+        "left": [0.1, 0.2, -0.3, 0.4, -0.5, 0.6],
+        "right": [-0.08, 0.3, -0.4, -0.2, 0.5, -0.6],
+    }
+    value.record_last_commanded_targets(targets, hold_sides=("right",))
+    result = value.request_position_hold("bounded move complete")
+    assert result["hold_target_source"] == "last_commanded_target"
+    assert result["hold_sides"] == ["right"]
+    assert not interfaces["left"].commands
+    assert interfaces["right"].commands == [
+        tuple(round(v * 180_000 / math.pi) for v in targets["right"])
+    ]

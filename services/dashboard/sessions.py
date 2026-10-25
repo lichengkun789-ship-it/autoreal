@@ -23,7 +23,6 @@ FRAME_ID = re.compile(r'[A-Za-z0-9]+')
 CAMERA = re.compile(r'[A-Za-z0-9_-]+')
 ACTIVE = ('preparing', 'running', 'usage_wait')
 WORKSPACE_NAME = 'agent-workspace'
-HOME_NAME = 'claude-home'
 TAIL_BYTES = 256 * 1024
 STOP_GRACE_SECONDS = 45  # the launcher stops the agent, then the robot service (30 s grace)
 
@@ -72,12 +71,30 @@ def is_launcher(pid):
         command = Path(f'/proc/{pid}/cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
     except OSError:
         return False
-    return 'harness.claude_cli.launcher' in command or 'start_agent.sh' in command
+    return any(name in command for name in
+               ('harness.launcher', 'harness.claude_cli.launcher',
+                'harness.deepseek_cli.launcher', 'start_agent.sh'))
 
 
 def truncate(value, limit):
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     return text if len(text) <= limit else text[:limit] + f'... [{len(text) - limit} more chars]'
+
+
+def motion_available(config):
+    from types import SimpleNamespace
+    from services.workspace.setup import Setup
+    try:
+        return Setup.from_config(SimpleNamespace(
+            robot=config.get('robot'),
+            task=config.get('task'),
+            observation_profile=config.get('observation_profile', 'state-only'),
+            subagents=config.get('subagents', 0),
+            agent_cli=config.get('agent_cli', 'claude'),
+            backend_options=config.get('backend_options') or {},
+        ), gemini=False).motion_available
+    except (TypeError, ValueError):
+        return False
 
 
 class Sessions:
@@ -143,8 +160,6 @@ class Sessions:
         return totals
 
     def summary(self, root):
-        from services.workspace.setup import ROBOT_FACTS
-
         config = read_json(root/'operator-input.json', {}) or {}
         lifecycle = read_json(root/'agent-lifecycle.json', {}) or {}
         process = self.process(root)
@@ -153,7 +168,7 @@ class Sessions:
             status = f'{status} (launcher gone)'
         return {
             'id': root.name, 'task': config.get('task'), 'robot': config.get('robot'),
-            'motion_available': bool(ROBOT_FACTS.get(config.get('robot'), {}).get('motion_available')),
+            'motion_available': motion_available(config),
             'created': (root/'operator-input.json').stat().st_mtime,
             'status': status, 'returncode': lifecycle.get('returncode'),
             'started_at': lifecycle.get('started_at'), 'finished_at': lifecycle.get('finished_at'),
@@ -161,7 +176,10 @@ class Sessions:
             'running': bool(process), 'process': process,
             'motion': arming.read(root),
             'requests': operator.pending(root),
-            'model': config.get('agent_model') or 'provider default (Opus 5.5)',
+            'agent_cli': config.get('agent_cli', 'claude'),
+            'model': config.get('agent_model') or ('provider default (DeepSeek)' if
+                                                    config.get('agent_cli') == 'dsh' else
+                                                    'provider default (Opus 5.5)'),
             'provider': config.get('agent_provider'), 'effort': config.get('agent_effort'),
             'session_hours': round(config.get('session_seconds', 0) / 3600, 2),
             'observation_profile': config.get('observation_profile'),
@@ -189,6 +207,7 @@ class Sessions:
             raise ValueError('task id: letters, digits, _ and - only')
         command = [self.python, str(self.project/'scripts/configure_session.py'), '--task', task,
                    '--task-text', str(form.get('task_text', '')),
+                   '--agent-cli', str(form.get('agent_cli') or 'claude'),
                    '--agent-effort', str(form.get('effort') or 'max'),
                    '--agent-provider', str(form.get('provider') or 'claude-login'),
                    '--session-hours', str(float(form.get('session_hours') or 4)),
@@ -258,11 +277,13 @@ class Sessions:
     # ----- arming ------------------------------------------------------------------------
     def arm(self, session_id, *, confirmed, minutes=None):
         if confirmed is not True:
-            raise PermissionError('confirm that a person is at the emergency stop and the workspace is clear')
+            raise PermissionError(
+                'confirm operator presence, a clear workspace, and the configured stop limitations'
+            )
         root = self.root(session_id)
-        from services.workspace.setup import ROBOT_FACTS
-        robot = (read_json(root/'operator-input.json', {}) or {}).get('robot')
-        if not ROBOT_FACTS.get(robot, {}).get('motion_available'):
+        config = read_json(root/'operator-input.json', {}) or {}
+        robot = config.get('robot')
+        if not motion_available(config):
             raise RuntimeError(f'{robot} backend exposes no motion tools in this milestone')
         if minutes is not None:
             minutes = float(minutes)
@@ -326,8 +347,13 @@ class Sessions:
         return path.read_bytes()
 
     def transcript_file(self, root):
-        projects = root/HOME_NAME/'projects'
-        files = sorted(projects.glob('*/*.jsonl'), key=lambda p: p.stat().st_mtime) if projects.is_dir() else []
+        config = read_json(root/'operator-input.json', {}) or {}
+        if config.get('agent_cli', 'claude') == 'dsh':
+            home = root/'dsh-home'/'sessions'
+            files = sorted(home.rglob('*.jsonl'), key=lambda p: p.stat().st_mtime) if home.is_dir() else []
+        else:
+            home = root/'claude-home'/'projects'
+            files = sorted(home.glob('*/*.jsonl'), key=lambda p: p.stat().st_mtime) if home.is_dir() else []
         return files[-1] if files else None
 
     @staticmethod

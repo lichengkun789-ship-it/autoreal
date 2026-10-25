@@ -1,13 +1,15 @@
-"""Read-only RAX backend for a dual-arm Piper system.
+"""RAX backend for a dual-arm Piper system.
 
-The first bring-up milestone deliberately exposes observation and dry-run validation
-only. No tool in this backend can command hardware yet.
+Observation and target validation are always available. A single-joint relative motion
+tool appears only when operator configuration binds it to passed characterization
+evidence and an explicit move allowlist.
 """
 
 from __future__ import annotations
 
 import time
 
+from .agent_motion import AgentMotionSettings, PiperAgentMotionController
 from .safety import validate_joint_target
 from .sdk_reader import PiperSdkReader
 
@@ -17,6 +19,7 @@ DEFAULTS = {
     "feedback_max_age_s": 0.25,
     "joint_limit_margin_rad": 0.02,
     "max_joint_step_rad": 0.05,
+    "agent_motion": None,
     "agent_python": None,
     "protected_paths": [],
 }
@@ -32,9 +35,7 @@ def _schema(properties=None, required=()):
 
 
 class PiperBackend:
-    """RAX backend contract backed by read-only Piper SDK state."""
-
-    mutating = frozenset()
+    """RAX backend contract backed by Piper SDK state and narrow motion admission."""
 
     def __init__(self, config, *, reader=None, clock=time.time):
         unknown = set(config.backend_options) - set(DEFAULTS)
@@ -50,13 +51,32 @@ class PiperBackend:
             raise ValueError("max_joint_step_rad must be positive")
         self.clock = clock
         arms = self.options["arms"]
-        if reader is None:
-            if not isinstance(arms, dict):
+        if not isinstance(arms, dict):
+            motion_options = self.options["agent_motion"] or {}
+            if reader is None or (
+                isinstance(motion_options, dict) and motion_options.get("enabled") is True
+            ):
                 raise ValueError(
                     "piper backend option 'arms' is required; see examples/piper.json"
                 )
+            arms = {}
+        self.motion_settings = AgentMotionSettings.from_options(
+            self.options["agent_motion"], arms=arms
+        )
+        if reader is None:
             reader = PiperSdkReader(arms, clock=clock)
         self.reader = reader
+        if self.motion_settings.enabled:
+            root = getattr(config, "root", None)
+            if root is None:
+                raise ValueError("enabled agent motion requires a session root")
+            self.agent_motion = PiperAgentMotionController(
+                root, reader, self.motion_settings
+            )
+            self.mutating = frozenset({"piper_move_joint"})
+        else:
+            self.agent_motion = None
+            self.mutating = frozenset()
 
     def tools(self):
         arm = {"type": "string", "enum": ["left", "right"]}
@@ -67,7 +87,7 @@ class PiperBackend:
             "maxItems": 6,
             "description": "Six absolute joint targets in radians.",
         }
-        return [
+        tools = [
             {
                 "name": "piper_status",
                 "description": (
@@ -93,6 +113,30 @@ class PiperBackend:
                 "inputSchema": _schema({"arm": arm, "positions": positions}, ("arm", "positions")),
             },
         ]
+        if self.agent_motion is not None:
+            tools.append(
+                {
+                    "name": "piper_move_joint",
+                    "description": (
+                        "Move one operator-allowlisted Piper joint by a small relative delta in radians, "
+                        "then latch the exact target as a software-only hold. Requires a live operator "
+                        "arming lease. It cannot enable, reset, home, disable, or command the gripper."
+                    ),
+                    "inputSchema": _schema(
+                        {
+                            "arm": arm,
+                            "joint": {"type": "integer", "minimum": 1, "maximum": 6},
+                            "delta_rad": {
+                                "type": "number",
+                                "minimum": -self.motion_settings.max_delta_rad,
+                                "maximum": self.motion_settings.max_delta_rad,
+                            },
+                        },
+                        ("arm", "joint", "delta_rad"),
+                    ),
+                }
+            )
+        return tools
 
     def validate(self, name, arguments):
         if name in {"piper_status", "piper_observe"}:
@@ -106,6 +150,15 @@ class PiperBackend:
                 raise ValueError("arm must be left or right")
             if not isinstance(arguments["positions"], list):
                 raise ValueError("positions must be a list")
+            return
+        if name == "piper_move_joint":
+            if self.agent_motion is None:
+                raise PermissionError("Piper Agent motion is disabled by operator configuration")
+            if set(arguments) != {"arm", "joint", "delta_rad"}:
+                raise ValueError("piper_move_joint requires arm, joint, and delta_rad")
+            self.agent_motion.validate_request(
+                arguments["arm"], arguments["joint"], arguments["delta_rad"]
+            )
             return
         raise ValueError(f"unknown tool {name}")
 
@@ -128,8 +181,17 @@ class PiperBackend:
                 reasons.append(f"{side} controller reports joint errors")
         return {
             "robot": "dual_piper",
-            "phase": "read_only_bringup",
-            "motion_tools_available": False,
+            "phase": (
+                "bounded_agent_motion"
+                if self.agent_motion is not None
+                else "read_only_bringup"
+            ),
+            "motion_tools_available": self.agent_motion is not None,
+            "agent_motion": (
+                self.motion_settings.public()
+                if self.agent_motion is None
+                else self.agent_motion.status()
+            ),
             "ready": ready,
             "readiness_reasons": reasons,
             **snapshot,
@@ -142,6 +204,10 @@ class PiperBackend:
         self.validate(name, arguments)
         if name in {"piper_status", "piper_observe"}:
             return self._snapshot(), []
+        if name == "piper_move_joint":
+            return self.agent_motion.execute(
+                arguments["arm"], arguments["joint"], arguments["delta_rad"]
+            ), []
         snapshot = self._snapshot()
         side = arguments["arm"]
         report = validate_joint_target(

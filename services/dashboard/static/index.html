@@ -78,11 +78,13 @@ table.kv td { padding:1px 8px 1px 0; vertical-align:top; } table.kv td:first-chi
         <label for="task_text">Task description (TASK.md)</label>
         <textarea id="task_text" name="task_text" placeholder="Put the red cube on top of the blue cube."></textarea>
         <div class="grid2">
+          <div><label for="agent_cli">Agent harness</label>
+            <select id="agent_cli" name="agent_cli"><option value="claude">Claude Code</option><option value="dsh">DeepSeek Harness</option></select></div>
           <div><label for="effort">Effort</label>
             <select id="effort" name="effort"><option>max</option><option>xhigh</option><option>high</option></select></div>
           <div><label for="provider">Provider</label>
             <select id="provider" name="provider"><option>claude-login</option><option>anthropic</option><option>openrouter</option></select></div>
-          <div><label for="model">Model (blank: Opus 5.5)</label><input id="model" name="model" placeholder="claude-opus-5-5"></div>
+          <div><label for="model">Model</label><input id="model" name="model" placeholder="provider default"></div>
           <div><label for="session_hours">Session hours</label><input id="session_hours" name="session_hours" type="number" min="0.1" step="0.5" value="4"></div>
           <div><label for="observation_profile">Observation</label>
             <select id="observation_profile" name="observation_profile"><option>state-only</option><option>rgbd</option><option>rgb-only</option></select></div>
@@ -102,7 +104,7 @@ table.kv td { padding:1px 8px 1px 0; vertical-align:top; } table.kv td:first-chi
       </div>
       <div class="row" style="margin-top:10px">
         <label style="display:flex; gap:6px; align-items:center; margin:0; color:var(--ink); font-size:14px">
-          <input type="checkbox" id="estop" style="width:auto"> A person is at the emergency stop and the workspace is clear</label>
+          <input type="checkbox" id="estop" style="width:auto"> Operator present, workspace clear, and configured stop limitations understood</label>
       </div>
       <div class="row" style="margin-top:6px">
         <input id="arm-minutes" type="number" min="1" step="1" placeholder="expires after N minutes (optional)" style="max-width:280px">

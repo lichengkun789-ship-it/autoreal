@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 import re
 
+from harness.backends import NAMES as AGENT_CLIS, PROVIDERS as PROVIDERS_BY_CLI
+
 AGENT_EFFORTS = ('high', 'xhigh', 'max')
-PROVIDERS = ('claude-login', 'openrouter', 'anthropic')
+PROVIDERS = tuple(dict.fromkeys(provider for cli in AGENT_CLIS for provider in PROVIDERS_BY_CLI[cli]))
 PROFILES = ('rgbd', 'rgb-only', 'state-only')
 
 
@@ -20,6 +22,7 @@ class Configuration:
     # Backend-specific operator settings (bridge URLs, cameras, workspace box, ...).
     backend_options: dict = field(default_factory=dict)
     observation_profile: str = 'state-only'
+    agent_cli: str = 'claude'
     agent_provider: str = 'claude-login'
     agent_effort: str = 'xhigh'
     agent_model: str | None = None  # Provider default (Opus 5.5) when unset.
@@ -43,8 +46,13 @@ class Configuration:
             raise ValueError('backend_options must be an object')
         if self.observation_profile not in PROFILES:
             raise ValueError(f'observation_profile must be one of {PROFILES}')
-        if self.agent_provider not in PROVIDERS:
-            raise ValueError(f'agent_provider must be one of {PROVIDERS}')
+        if self.agent_cli not in AGENT_CLIS:
+            raise ValueError(f'agent_cli must be one of {AGENT_CLIS}')
+        providers = PROVIDERS_BY_CLI[self.agent_cli]
+        if self.agent_provider not in providers:
+            raise ValueError(f'{self.agent_cli} agent_provider must be one of {providers}')
+        if self.agent_cli == 'dsh' and self.subagents:
+            raise ValueError('DeepSeek Harness does not support subagents in this real-robot backend')
         if self.agent_effort not in AGENT_EFFORTS:
             raise ValueError(f'agent_effort must be one of {AGENT_EFFORTS}')
         if type(self.session_seconds) is not int or not 60 <= self.session_seconds <= 7 * 24 * 3600:

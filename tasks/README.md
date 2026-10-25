@@ -15,3 +15,8 @@ Each task owns:
 Robot control remains behind the RAX tools exposed by `services/<robot>/backend.py`.
 Generated controllers and session recordings belong under the external artifact root,
 not in this source tree.
+
+`piper_agent_joint_step/` is a hardware-commissioning task rather than an object task.
+It exists to verify the complete model-to-MCP-to-backend path under one fixed,
+evidence-bound command. Its evaluator consumes private session audit records and
+motion receipts; it does not grant motion capability or define hardware limits.

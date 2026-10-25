@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "kind": "piper_software_hold_only_confirmation",
+  "operator": "REPLACE_ME",
+  "robot_asset_id": "REPLACE_ME",
+  "acknowledgements": {
+    "operator_at_keyboard": false,
+    "workspace_clear": false,
+    "robot_base_secured": false,
+    "no_payload": false,
+    "gravity_descent_path_clear": false,
+    "no_physical_estop_available": false,
+    "software_hold_is_not_safety_rated": false,
+    "process_can_fail_before_hold": false,
+    "can_or_power_loss_can_defeat_hold": false,
+    "no_automatic_return_or_recovery": false
+  },
+  "notes": ""
+}

@@ -38,3 +38,18 @@ def test_the_mock_robot_needs_no_options(tmp_path):
     result = configure(tmp_path, '--robot', 'mock')
     assert result.returncode == 0, result.stderr
     assert json.loads(Path(result.stdout.strip()).read_text())['backend_options'] == {}
+
+
+def test_deepseek_harness_selects_its_provider_default(tmp_path):
+    result = configure(tmp_path, '--robot', 'mock', '--agent-cli', 'dsh')
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(Path(result.stdout.strip()).read_text())
+    assert saved['agent_cli'] == 'dsh'
+    assert saved['agent_provider'] == 'deepseek-api'
+
+
+def test_provider_must_belong_to_the_selected_harness(tmp_path):
+    result = configure(tmp_path, '--robot', 'mock', '--agent-cli', 'dsh',
+                       '--agent-provider', 'anthropic')
+    assert result.returncode != 0
+    assert 'dsh agent_provider' in result.stderr

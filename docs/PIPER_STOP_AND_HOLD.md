@@ -1,8 +1,9 @@
 # Piper stop, hold, and recovery protocol
 
-This document defines the safety boundary for future Piper motion support. It does not
-authorize motion and does not add any stop, reset, enable, disable, or motion tool to
-the Agent.
+This document defines the Piper motion boundary. It does not itself authorize motion.
+The optional bounded Agent tool is admitted separately by operator configuration and
+passed characterization evidence; no stop, reset, enable, disable, or recovery tool is
+exposed to the Agent.
 
 ## Terms are not interchangeable
 
@@ -16,11 +17,10 @@ the Agent.
   arm may fall.
 - **Reset/resume** (`EmergencyStop(0x02)` / `MotionCtrl_1(0x02, 0, 0)`) is recovery,
   not stopping. It must never run automatically or be exposed to an Agent.
-- **Position hold** is the operational interruption path, not the emergency path. A
-  future motion worker will latch out new Agent commands, obtain fresh joint feedback,
-  and command a target derived from the measured pose. The exact target-selection and
-  refresh behavior are deliberately not implemented until a one-arm characterization
-  proves that they arrest motion without a jump. It is not safety-rated.
+- **Position hold** is the operational interruption path, not the emergency path. The
+  bounded motion worker latches out the current command and re-sends its exact accepted
+  target to the selected arm. It does not derive a new target from moving feedback. It
+  is not safety-rated.
 
 The installed SDK's `ResetPiper` documentation explicitly warns that the arm can lose
 power and fall. The upstream Piper SDK issue below also describes the damped descent
@@ -33,11 +33,17 @@ behavior of the software emergency stop:
 
 | Situation | Selected action | Owner | Current status |
 | --- | --- | --- | --- |
-| Normal pause, rejected command, or end of a bounded move | Latched position hold in the single CAN-owning motion worker | Motion worker/operator supervisor | Fake-interface implementation complete; hardware uncharacterized |
+| Normal pause, revoked authorization, or end of a bounded move | Latched last-target position hold in the single CAN-owning motion worker | Motion worker/operator supervisor | Right J1 positive minimum-motion receipt recorded; other axes require characterization |
 | Immediate danger to a person, robot, or scene | Physical emergency stop | Operator | Must be confirmed on this installation |
 | Physical path is unavailable and operator deliberately chooses the firmware fallback | `EmergencyStop(0x01)` | Operator only | Not exposed; expect damped descent |
 | Reset, fault clear, resume, or enable | Manual recovery procedure | Operator only | Never an Agent action |
 | Motor disable | Never used as hold | Operator only | May remove support |
+
+This installation currently has no confirmed physical emergency-stop path. For the
+minimum-motion characterization and evidence-matched bounded Agent sessions, the operator may use the explicitly
+acknowledged `software_hold_only` mode in `docs/PIPER_MINIMUM_MOTION_TEST.md`. That
+reduced-protection mode re-sends the exact last accepted target and does not satisfy or
+replace a physical emergency stop. It is not approved for unattended operation.
 
 Dashboard **disarm** only revokes authorization. It does not itself command a hold or
 an emergency stop. Stopping an Agent process also must not be treated as a physical
@@ -60,7 +66,7 @@ stop mechanism.
 
 1. The physical emergency stop remains reachable by a named operator and independent
    of the Agent, RAX server, Python process, and workstation.
-2. A future motion worker owns the CAN control connection. The Agent may request a
+2. The robot-service motion worker owns the CAN control connection. The Agent may request a
    bounded motion but may not enable, reset, resume, disable, or clear faults.
 3. A future operator supervisor owns a latched stop channel outside the Agent tool
    surface. The motion worker performs position hold because only one process may own
@@ -119,7 +125,6 @@ characterization design.
   low-speed move. A failed or interrupted measurement leaves recovery manual.
 - Command interruption behavior is measured. Sending a measured pose is not
   called a hold until it is proven stable under interruption and stale feedback.
-- No reset, resume, enable, disable, or motion API is present in the RAX Agent backend
-  until all receipts pass.
-
-Until these gates pass, `PiperBackend.mutating` remains empty.
+- No reset, resume, enable, disable, homing, gripper, or uncharacterized motion API is
+  present in the RAX Agent backend. When Agent motion is disabled,
+  `PiperBackend.mutating` remains empty.

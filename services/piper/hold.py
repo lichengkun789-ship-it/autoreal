@@ -48,19 +48,24 @@ def _native_joint_target(joints_rad) -> tuple[int, ...]:
 class PiperJointCommandAdapter:
     """Narrow adapter over already-connected SDK interfaces.
 
-    The owning motion worker is responsible for placing the controller in joint
-    position mode before arming. This adapter deliberately exposes only ``JointCtrl``.
+    With a configured speed it enters joint-position mode immediately before each
+    ``JointCtrl`` call. Without a speed it preserves the hardware-free legacy tests.
     """
 
-    def __init__(self, interfaces: dict):
+    def __init__(self, interfaces: dict, *, speed_percent: int | None = None):
         if set(interfaces) != set(SIDES):
             raise ValueError("command adapter requires exactly left and right interfaces")
+        if speed_percent is not None and not 1 <= speed_percent <= 100:
+            raise ValueError("speed_percent must be in 1..100")
         self.interfaces = dict(interfaces)
+        self.speed_percent = speed_percent
 
     def command_position(self, side: str, joints_rad) -> tuple[int, ...]:
         if side not in SIDES:
             raise ValueError("side must be left or right")
         native = _native_joint_target(joints_rad)
+        if self.speed_percent is not None:
+            self.interfaces[side].MotionCtrl_2(0x01, 0x01, self.speed_percent, 0x00)
         self.interfaces[side].JointCtrl(*native)
         return native
 
@@ -78,6 +83,8 @@ class PiperHoldController:
         self.reason = None
         self.hold_targets_rad = None
         self.hold_native_arguments = None
+        self.hold_target_source = None
+        self.hold_sides = SIDES
         self.last_operator_lease_id = None
 
     def status(self) -> dict:
@@ -88,13 +95,15 @@ class PiperHoldController:
             "hold_sdk_calls_returned": self.hold_native_arguments is not None,
             "reason": self.reason,
             "hold_targets_rad": self.hold_targets_rad,
+            "hold_target_source": self.hold_target_source,
+            "hold_sides": list(self.hold_sides),
         }
 
     def operator_arm_for_characterization(
         self,
         *,
         operator_lease_id: str,
-        stop_plan_passed: bool,
+        operator_protocol_acknowledged: bool,
         passive_probe_passed: bool,
     ) -> dict:
         """Enter a software motion window; this sends no hardware command."""
@@ -104,8 +113,8 @@ class PiperHoldController:
             raise PermissionError("a new operator lease id is required")
         if operator_lease_id == self.last_operator_lease_id:
             raise PermissionError("the previous operator lease cannot be reused")
-        if stop_plan_passed is not True:
-            raise PermissionError("the operator stop plan has not passed")
+        if operator_protocol_acknowledged is not True:
+            raise PermissionError("the operator protocol has not been acknowledged")
         if passive_probe_passed is not True:
             raise PermissionError("the passive Piper probe has not passed")
         self.last_operator_lease_id = operator_lease_id
@@ -113,17 +122,39 @@ class PiperHoldController:
         self.reason = None
         self.hold_targets_rad = None
         self.hold_native_arguments = None
+        self.hold_target_source = None
+        self.hold_sides = SIDES
         return self.status()
 
     def require_motion_allowed(self) -> None:
         if self.state != MOTION_ARMED:
             raise MotionBlocked(f"motion blocked while Piper state is {self.state}")
 
-    def request_position_hold(self, reason: str) -> dict:
-        """Latch first, then dispatch fresh measured positions to both arms once.
+    def record_last_commanded_targets(self, targets: dict, *, hold_sides=SIDES) -> None:
+        """Record the exact accepted target used if software hold is requested."""
+        self.require_motion_allowed()
+        if not isinstance(targets, dict) or set(targets) != set(SIDES):
+            raise ValueError("targets must contain exactly left and right arms")
+        sides = tuple(hold_sides)
+        if not sides or len(set(sides)) != len(sides) or any(side not in SIDES for side in sides):
+            raise ValueError("hold_sides must contain unique left/right values")
+        checked = {}
+        for side in SIDES:
+            values = tuple(float(value) for value in targets[side])
+            _native_joint_target(values)
+            for index, (value, limits) in enumerate(zip(values, JOINT_LIMITS_RAD), start=1):
+                if not limits[0] <= value <= limits[1]:
+                    raise ValueError(f"{side} joint {index} target is outside known limits")
+            checked[side] = values
+        self.hold_targets_rad = checked
+        self.hold_target_source = "last_commanded_target"
+        self.hold_sides = sides
 
-        A successful return means only that both SDK calls returned. Physical hold and
-        refresh-rate behavior remain hardware-characterization questions.
+    def request_position_hold(self, reason: str) -> dict:
+        """Latch first, then dispatch the selected hold targets once.
+
+        A successful return means only that every selected SDK call returned. Physical
+        hold and refresh-rate behavior remain hardware-characterization questions.
         """
         if self.state == HOLD_LATCHED:
             return self.status()
@@ -136,10 +167,14 @@ class PiperHoldController:
         self.reason = reason.strip()
         snapshot = None
         try:
-            snapshot = self.reader.snapshot()
-            targets = self._fresh_targets(snapshot)
+            if self.hold_target_source == "last_commanded_target":
+                targets = self.hold_targets_rad
+            else:
+                snapshot = self.reader.snapshot()
+                targets = self.fresh_targets(snapshot)
+                self.hold_target_source = "fresh_measured_pose"
             native = {}
-            for side in SIDES:
+            for side in self.hold_sides:
                 native[side] = self.commander.command_position(side, targets[side])
             self.hold_targets_rad = targets
             self.hold_native_arguments = native
@@ -151,7 +186,7 @@ class PiperHoldController:
                 robot_state=snapshot,
             ) from exc
 
-    def _fresh_targets(self, snapshot: dict) -> dict[str, tuple[float, ...]]:
+    def fresh_targets(self, snapshot: dict) -> dict[str, tuple[float, ...]]:
         arms = snapshot.get("arms") if isinstance(snapshot, dict) else None
         if not isinstance(arms, dict) or set(arms) != set(SIDES):
             raise ValueError("snapshot must contain exactly left and right arms")

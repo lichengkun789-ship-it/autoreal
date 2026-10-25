@@ -82,7 +82,7 @@ function renderSessions(value) {
     },
       el('div', { class: 'row' }, el('strong', {}, s.task), badgeFor(s.status, s.running),
         s.motion_available && s.motion.armed ? el('span', { class: 'badge bad' }, 'ARMED') : null),
-      el('div', { class: 'muted' }, `${s.id} · ${s.effort} · ${fmt(s.usage.calls)} calls`)));
+      el('div', { class: 'muted' }, `${s.id} · ${s.agent_cli} · ${s.effort} · ${fmt(s.usage.calls)} calls`)));
   }
   renderDetail();
 }
@@ -103,7 +103,7 @@ function renderDetail() {
       el('tr', {}, el('td', {}, 'status'), el('td', {}, badgeFor(s.status, s.running),
         s.returncode !== undefined && s.returncode !== null ? ` returncode ${s.returncode}` : '',
         s.process ? ` pid ${s.process.pid} (${s.process.source})` : '')),
-      el('tr', {}, el('td', {}, 'model'), el('td', {}, `${s.model} · ${s.provider} · effort ${s.effort}`)),
+      el('tr', {}, el('td', {}, 'model'), el('td', {}, `${s.agent_cli} · ${s.model} · ${s.provider} · effort ${s.effort}`)),
       el('tr', {}, el('td', {}, 'budget'), el('td', {}, `${s.session_hours} h · ${s.observation_profile} · attempts ${s.attempts}`)),
       el('tr', {}, el('td', {}, 'times'), el('td', {}, `created ${when(s.created)} · started ${when(s.started_at)} · finished ${when(s.finished_at)}`)),
       el('tr', {}, el('td', {}, 'usage'), el('td', {},
@@ -228,6 +228,25 @@ async function pollRobot() {
   }
 }
 
+const harnessProviders = {
+  claude: ['claude-login', 'anthropic', 'openrouter'],
+  dsh: ['deepseek-api', 'openrouter', 'custom'],
+};
+
+function syncHarnessForm() {
+  const harness = $('agent_cli').value;
+  const providers = harnessProviders[harness];
+  const selected = providers.includes($('provider').value) ? $('provider').value : providers[0];
+  $('provider').replaceChildren(...providers.map((value) => el('option', { value }, value)));
+  $('provider').value = selected;
+  $('model').placeholder = harness === 'dsh' ? 'deepseek-flash' : 'claude-opus-5-5';
+  $('subagents').disabled = harness === 'dsh';
+  if (harness === 'dsh') $('subagents').value = '0';
+}
+
+$('agent_cli').addEventListener('change', syncHarnessForm);
+syncHarnessForm();
+
 $('new-session').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = Object.fromEntries(new FormData(event.target).entries());
@@ -240,7 +259,7 @@ $('new-session').addEventListener('submit', async (event) => {
 });
 
 $('arm').addEventListener('click', async () => {
-  if (!$('estop').checked) { toast('Tick the emergency-stop confirmation first.', true); return; }
+  if (!$('estop').checked) { toast('Confirm the operator motion conditions first.', true); return; }
   if (!confirm('ARM robot motion for this session? The agent can then move the real robot.')) return;
   const minutes = $('arm-minutes').value ? Number($('arm-minutes').value) : null;
   try {

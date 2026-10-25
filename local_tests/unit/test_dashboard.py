@@ -92,6 +92,7 @@ def test_configure_and_list(dashboard, artifact_root):
     base, token, _ = dashboard
     value = configure(base)
     config = json.loads(Path(value['config_path']).read_text())
+    assert config['agent_cli'] == 'claude'
     assert config['agent_effort'] == 'max' and config['agent_provider'] == 'claude-login'
     assert config['task'] == 'red_on_blue' and config['observation_profile'] == 'state-only'
     assert config['backend_options'] == json.loads((PROJECT/'examples/piper.json').read_text())
@@ -103,6 +104,17 @@ def test_configure_and_list(dashboard, artifact_root):
     assert session['status'] == 'configured' and session['running'] is False
     assert session['motion']['armed'] is False and session['usage']['calls'] == 0
     assert call(base, '/api/configure', {'task': '../evil'})[0] == 400
+
+
+def test_dashboard_configures_a_deepseek_harness_session(dashboard):
+    base, _, _ = dashboard
+    status, value = call(base, '/api/configure', {
+        'task': 'dsh_probe', 'task_text': 'Read robot state.', 'agent_cli': 'dsh',
+        'provider': 'deepseek-api', 'effort': 'max', 'subagents': 0,
+    })
+    assert status == 200, value
+    config = json.loads(Path(value['config_path']).read_text())
+    assert config['agent_cli'] == 'dsh' and config['agent_provider'] == 'deepseek-api'
 
 
 def test_configure_without_backend_options_reports_missing_arm_configuration(dashboard, monkeypatch):

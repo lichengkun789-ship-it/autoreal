@@ -10,3 +10,8 @@ generation used as the adaptation reference.
 
 Franka hardware code is not part of the AutoRAX working tree. Upstream changes are
 reviewed and ported intentionally instead of merging robot-specific implementations.
+
+The native DeepSeek Harness adapter is a focused port from the current upstream
+simulation-branch multi-harness implementation. AutoRAX keeps its real-robot session
+lifecycle and Piper safety backend; simulator scheduling, formal evaluation, and
+benchmark-specific code were not copied.

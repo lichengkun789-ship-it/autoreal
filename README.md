@@ -5,9 +5,11 @@ Piper robot while keeping the agent harness, hardware backend, and task definiti
 independent. The repository is intended to support multiple manipulation tasks; no
 task is built into the Piper driver.
 
-The current milestone is intentionally **read-only**. RAX can connect to both Piper
+The default milestone is intentionally **read-only**. RAX can connect to both Piper
 CAN interfaces, inspect measured state, reject stale or faulted feedback, and dry-run
-absolute joint targets. It cannot command arm or gripper motion yet.
+absolute joint targets. An operator may opt a session into the evidence-bound
+`piper_move_joint` tool after a matching minimum-motion characterization. Gripper,
+homing, enable, reset, and general trajectory control remain unavailable.
 
 ## Repository layout
 
@@ -15,7 +17,7 @@ absolute joint targets. It cannot command arm or gripper motion yet.
 | --- | --- |
 | `services/controller/` | Robot-neutral MCP dispatch, sessions, budgets, and audit logs |
 | `services/piper/` | Piper SDK adapter, state normalization, and joint-target validation |
-| `harness/` | Sandboxed coding-agent process and model relay |
+| `harness/` | Agent selection plus isolated Claude Code and DeepSeek Harness adapters |
 | `agent_skills/` | Capability-specific instructions installed into an agent workspace |
 | `auto_research_agent/` | Generated workspace template and stable Python runtime API |
 | `tasks/` | Task packages: goal, reset procedure, evaluator, and tests |
@@ -50,6 +52,27 @@ The backend currently targets `piper_sdk==0.6.2`, matching the public feedback A
 by the adapter. Verify that version against the installed firmware during read-only
 bring-up. No test in the default suite opens CAN.
 
+## Agent harnesses
+
+Sessions select the agent independently from the robot backend. `claude` remains the
+default; `dsh` runs the pinned native DeepSeek Harness with `deepseek-api`, `openrouter`,
+or a compatible custom endpoint.
+
+```bash
+python scripts/configure_session.py \
+  --robot mock \
+  --task dsh_smoke \
+  --task-text "Inspect status without motion." \
+  --agent-cli dsh \
+  --agent-provider deepseek-api \
+  --subagents 0
+```
+
+DeepSeek Harness requires Node.js 24+, a pinned local DSH installation, and a private
+key file outside the checkout. See [docs/AGENT_HARNESSES.md](docs/AGENT_HARNESSES.md)
+for installation, credential handling, `prepare-only` validation, and launch commands.
+Changing the harness does not change the Piper tool set or enable motion.
+
 ## Read-only Piper session
 
 1. Copy `examples/piper.json` outside the repository and set the real CAN interface
@@ -73,7 +96,8 @@ python scripts/configure_session.py \
 bash scripts/start_agent.sh --config /path/to/operator-input.json
 ```
 
-`piper_status`, `piper_observe`, and `piper_check_joints` are the only Piper tools.
+With the example's default `agent_motion.enabled: false`, `piper_status`,
+`piper_observe`, and `piper_check_joints` are the only Piper tools.
 `piper_check_joints` is a dry run: an accepted result never means a command was sent.
 
 Before starting an agent session, run the operator-side read-only probe. It checks the
@@ -120,10 +144,13 @@ Use a private copy of `examples/piper_stop_confirmation.json`; do not commit a r
 containing site or operator details. A passed receipt confirms the static protocol but
 does not authorize motion or claim that position hold has been characterized.
 
-The position-hold latch now has hardware-free coverage through injected SDK-shaped
-interfaces in `local_tests/unit/test_piper_hold.py`. It is not connected to the live
-backend. The provisional one-arm test envelope and evidence requirements are defined
-in `docs/PIPER_MINIMUM_MOTION_TEST.md`; no real-motion runner is present yet.
+The position-hold latch has hardware-free coverage through injected SDK-shaped
+interfaces in `local_tests/unit/test_piper_hold.py`. The operator-only minimum-motion
+runner is documented in `docs/PIPER_MINIMUM_MOTION_TEST.md`. It uses a reduced-
+protection last-target software hold because this installation has no confirmed
+physical emergency stop. A passed receipt can admit only the same arm, joint,
+direction, delta, and speed to the optional Agent tool; see
+[docs/PIPER_AGENT_MOTION.md](docs/PIPER_AGENT_MOTION.md).
 
 ## Adding tasks
 
@@ -134,10 +161,21 @@ in `evaluator.py`, task wording in `TASK.md`, and human reset instructions in
 
 ## Motion gate
 
-Motion is a separate milestone. It will be exposed only after the checklist in
-[docs/PIPER_BRINGUP.md](docs/PIPER_BRINGUP.md) records a reliable hold path, command
-rate, stop latency, measured tracking behavior, stale-feedback handling, and tested
-disarm-during-motion behavior. Until then, adding a mutating MCP tool is out of scope.
+Motion remains opt-in per session. The backend exposes one mutating MCP tool only when
+operator configuration names passed characterization receipts and an explicit
+arm/joint/direction allowlist. Runtime checks require a time-bounded operator arming
+lease, fresh stable feedback, mechanical limits, per-call caps, and per-lease command
+and cumulative-travel budgets. Every call ends in last-target software hold and writes
+a private receipt. This is supervised bring-up capability, not safety-rated or
+task-level manipulation control.
+
+The first full model-driven commissioning task is
+`tasks/piper_agent_joint_step/`. `scripts/run_piper_agent_test.py` validates its exact
+task text and one-command motion envelope, starts the standard RAX Agent, audits the
+model's tool choice, and always disarms the session when the launcher exits. See
+[docs/PIPER_AGENT_MOTION.md](docs/PIPER_AGENT_MOTION.md#full-rax-agent-commissioning)
+for the operator-present workflow. This verifies Agent tool selection; it does not
+expand the backend into general manipulation control.
 
 ## License
 

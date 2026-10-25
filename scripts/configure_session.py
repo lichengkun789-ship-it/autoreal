@@ -16,7 +16,7 @@ import secrets
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from services.controller.config import AGENT_EFFORTS, PROFILES, PROVIDERS, Configuration  # noqa: E402
+from services.controller.config import AGENT_CLIS, AGENT_EFFORTS, PROFILES, PROVIDERS, Configuration  # noqa: E402
 from services.storage_root import artifact_root  # noqa: E402
 
 
@@ -29,7 +29,9 @@ def main():
     parser.add_argument('--backend-options', type=Path, default=os.environ.get('RAX_BACKEND_OPTIONS') or None,
                         help='JSON file of backend settings (default: $RAX_BACKEND_OPTIONS)')
     parser.add_argument('--observation-profile', choices=PROFILES, default='state-only')
-    parser.add_argument('--agent-provider', choices=PROVIDERS, default='claude-login')
+    parser.add_argument('--agent-cli', choices=AGENT_CLIS, default='claude')
+    parser.add_argument('--agent-provider', choices=PROVIDERS,
+                        help='Provider for the selected harness (default: claude-login or deepseek-api)')
     parser.add_argument('--agent-effort', choices=AGENT_EFFORTS, default='xhigh')
     parser.add_argument('--agent-model')
     parser.add_argument('--session-hours', type=float, default=4.0)
@@ -45,10 +47,11 @@ def main():
                      'RAX_BACKEND_OPTIONS (see examples/piper.json)')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     root = artifact_root()/'sessions'/f'{stamp}_{args.task}_{secrets.token_hex(3)}'
+    provider = args.agent_provider or ('deepseek-api' if args.agent_cli == 'dsh' else 'claude-login')
     config = Configuration(
         root=root, task=args.task, task_description=description, robot=args.robot,
         backend_options=options,
-        observation_profile=args.observation_profile, agent_provider=args.agent_provider,
+        observation_profile=args.observation_profile, agent_cli=args.agent_cli, agent_provider=provider,
         agent_effort=args.agent_effort, agent_model=args.agent_model,
         session_seconds=int(args.session_hours * 3600), max_model_calls=args.max_model_calls,
         subagents=args.subagents)
