@@ -15,12 +15,13 @@ motion merely because a unit test passes.
 5. Review `docs/PIPER_STOP_AND_HOLD.md`, fill a private copy of
    `examples/piper_stop_confirmation.json`, and require a `passed` receipt from
    `scripts/verify_piper_stop_plan.py`. An SDK emergency stop is not a static hold.
-6. Implement the latched position-hold path with fake interfaces, then measure hold
-   latency and overrun from a very small, low-speed movement.
-7. Characterize one arm at a time, returning to the starting pose after every move.
-8. Add backend motion checks and tests using a fake SDK interface.
-9. Expose motion tools only after disarm-during-motion and stale-feedback tests pass.
-10. Add the measured values to the Piper robot-interface skill.
+6. Require `local_tests/unit/test_piper_hold.py` to pass and review
+   `docs/PIPER_MINIMUM_MOTION_TEST.md`, then implement the operator-only runner.
+7. Measure hold latency and overrun from a very small, low-speed movement.
+8. Characterize one arm at a time. Do not automatically return to the starting pose.
+9. Add backend motion checks using the measured limits.
+10. Expose motion tools only after disarm-during-motion and stale-feedback tests pass.
+11. Add the measured values to the Piper robot-interface skill.
 
 The Agent never enables motors, clears faults, sets zero positions, modifies gains, or
 configures CAN interfaces. Those remain operator procedures outside MCP.

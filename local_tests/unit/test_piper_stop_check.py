@@ -46,6 +46,9 @@ def test_confirmed_static_gate_still_does_not_authorize_motion():
     assert receipt["general_motion_authorized"] is False
     assert receipt["state_rules"]["recovery_target"] == "read_only"
     assert receipt["state_rules"]["direct_stop_to_motion_transition"] is False
+    assert receipt["policy"]["operational_interruption"]["status"] == (
+        "implemented_with_fake_interfaces_hardware_uncharacterized"
+    )
 
 
 @pytest.mark.parametrize(

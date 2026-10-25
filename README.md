@@ -120,6 +120,11 @@ Use a private copy of `examples/piper_stop_confirmation.json`; do not commit a r
 containing site or operator details. A passed receipt confirms the static protocol but
 does not authorize motion or claim that position hold has been characterized.
 
+The position-hold latch now has hardware-free coverage through injected SDK-shaped
+interfaces in `local_tests/unit/test_piper_hold.py`. It is not connected to the live
+backend. The provisional one-arm test envelope and evidence requirements are defined
+in `docs/PIPER_MINIMUM_MOTION_TEST.md`; no real-motion runner is present yet.
+
 ## Adding tasks
 
 Copy `tasks/_template/` to `tasks/<task_id>/`. Keep robot-independent success criteria

@@ -33,7 +33,7 @@ behavior of the software emergency stop:
 
 | Situation | Selected action | Owner | Current status |
 | --- | --- | --- | --- |
-| Normal pause, rejected command, or end of a bounded move | Latched position hold in the single CAN-owning motion worker | Motion worker/operator supervisor | Not implemented or characterized |
+| Normal pause, rejected command, or end of a bounded move | Latched position hold in the single CAN-owning motion worker | Motion worker/operator supervisor | Fake-interface implementation complete; hardware uncharacterized |
 | Immediate danger to a person, robot, or scene | Physical emergency stop | Operator | Must be confirmed on this installation |
 | Physical path is unavailable and operator deliberately chooses the firmware fallback | `EmergencyStop(0x01)` | Operator only | Not exposed; expect damped descent |
 | Reset, fault clear, resume, or enable | Manual recovery procedure | Operator only | Never an Agent action |
@@ -100,6 +100,12 @@ The resulting `passed` receipt means only that the operator path and rules were
 confirmed. It explicitly keeps `general_motion_authorized=false` and
 `minimum_motion_characterization_ready=false`.
 
+The hardware-free implementation is in `services/piper/hold.py`. It latches before
+calling the injected SDK interfaces, rejects later motion, treats stale feedback or a
+partial dual-arm dispatch as `RECOVERY_REQUIRED`, and provides no reset, enable, or
+emergency-stop method. See `docs/PIPER_MINIMUM_MOTION_TEST.md` for the later physical
+characterization design.
+
 ## Gates before minimum motion
 
 - The passive Piper probe is `passed`. When an independent joint display exists, the
@@ -108,7 +114,8 @@ confirmed. It explicitly keeps `general_motion_authorized=false` and
 - The `piper_operator_stop_plan` receipt is `passed` for this exact hardware.
 - The operator verifies that neither physical nor software stop creates an unsafe
   gravity-driven path.
-- Software-stop latency and post-stop travel are measured with one very small,
+- The fake-interface hold tests pass, then software-stop latency and post-stop travel
+  are measured with one very small,
   low-speed move. A failed or interrupted measurement leaves recovery manual.
 - Command interruption behavior is measured. Sending a measured pose is not
   called a hold until it is proven stable under interruption and stale feedback.

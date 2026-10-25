@@ -34,7 +34,7 @@ def _policy() -> dict:
                 "reject new motion and command a target derived from the last fresh "
                 "measured pose; exact command rate and stability remain uncharacterized"
             ),
-            "status": "not_implemented_not_characterized",
+            "status": "implemented_with_fake_interfaces_hardware_uncharacterized",
             "safety_rated": False,
         },
         "firmware_emergency_stop": {
@@ -154,9 +154,8 @@ def build_stop_plan_receipt(confirmation: dict | None = None) -> dict:
             "direct_stop_to_motion_transition": False,
         },
         "remaining_before_minimum_motion": [
-            "implement the position-hold latch inside the single CAN-owning motion worker",
-            "prove with fake interfaces that hold blocks later Agent commands",
-            "define one-arm no-payload motion distance, speed, timeout, and travel envelope",
+            "complete the operator stop-plan confirmation for the exact robot",
+            "implement an operator-only runner around the tested hold controller",
             "measure hold latency and post-request travel on the exact robot",
         ],
     }
