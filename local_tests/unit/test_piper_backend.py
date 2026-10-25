@@ -232,6 +232,34 @@ def test_readonly_probe_refuses_missing_or_duplicate_interfaces(tmp_path):
         run_readonly_probe(options, sys_class_net=tmp_path / "net")
 
 
+def test_readonly_probe_fails_if_any_can_transmission_is_observed(tmp_path):
+    sys_class_net = tmp_path / "net"
+    make_link(sys_class_net, "can_l")
+    make_link(sys_class_net, "can_r")
+    options = {
+        "arms": {
+            "left": {"can_name": "can_l"},
+            "right": {"can_name": "can_r"},
+        }
+    }
+
+    def factory(config):
+        (sys_class_net / "can_r" / "statistics" / "tx_packets").write_text("3")
+        return PiperBackend(config, reader=FakeReader())
+
+    receipt = run_readonly_probe(
+        options,
+        samples=1,
+        startup_seconds=0,
+        backend_factory=factory,
+        sys_class_net=sys_class_net,
+        sleeper=lambda _: None,
+    )
+    assert receipt["status"] == "failed"
+    assert receipt["can_interfaces"]["right"]["delta"]["tx_packets"] == 1
+    assert "right" in receipt["failure_reasons"][0]
+
+
 def test_sdk_reader_disconnects_first_arm_if_second_connection_fails():
     interfaces = []
 

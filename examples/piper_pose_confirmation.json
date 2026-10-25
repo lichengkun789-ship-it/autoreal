@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "operator": "REPLACE_WITH_OPERATOR_NAME",
+  "reference_source": "REPLACE_WITH_INDEPENDENT_JOINT_DISPLAY",
+  "left_right_mapping_confirmed": false,
+  "joint_order_and_sign_confirmed": false,
+  "arms": {
+    "left": {
+      "joints_deg": [0, 0, 0, 0, 0, 0]
+    },
+    "right": {
+      "joints_deg": [0, 0, 0, 0, 0, 0]
+    }
+  },
+  "notes": "Replace every placeholder and false value before use."
+}

@@ -122,6 +122,16 @@ def run_readonly_probe(
         receipt["can_interfaces"][side]["after"] = after[side]
         receipt["can_interfaces"][side]["delta"] = _interface_delta(before[side], after[side])
 
+    transmitted = [
+        side
+        for side in names
+        if receipt["can_interfaces"][side]["delta"]["tx_packets"] not in (None, 0)
+    ]
+    if transmitted:
+        receipt.setdefault("failure_reasons", []).append(
+            "CAN transmit counter changed during passive probe: " + ", ".join(transmitted)
+        )
+
     readiness = [sample.get("ready") is True for sample in receipt["samples"]]
     if len(readiness) == samples and all(readiness) and not receipt.get("failure_reasons"):
         ages = [

@@ -84,6 +84,19 @@ no mutating tools, and saves a JSON receipt below the artifact root:
 python scripts/probe_piper_readonly.py --backend-options "$RAX_BACKEND_OPTIONS"
 ```
 
+The next bring-up gate cross-checks the reported joint pose against a separate joint
+display. The first command prints a compact degree table. Fill a private copy of
+`examples/piper_pose_confirmation.json`, then run the confirmed check:
+
+```bash
+python scripts/verify_piper_pose.py --backend-options "$RAX_BACKEND_OPTIONS"
+python scripts/verify_piper_pose.py --backend-options "$RAX_BACKEND_OPTIONS" \
+  --confirmation /path/to/operator-pose-confirmation.json
+```
+
+Read `docs/PIPER_STOP_AND_HOLD.md` before adding motion. Piper software emergency stop,
+motor disable, reset, and position hold have materially different behavior.
+
 ## Adding tasks
 
 Copy `tasks/_template/` to `tasks/<task_id>/`. Keep robot-independent success criteria
