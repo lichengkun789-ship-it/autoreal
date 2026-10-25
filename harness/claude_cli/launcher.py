@@ -101,9 +101,9 @@ def agent_python(config):
 
 def site_paths(config):
     """The operator's robot-stack paths: RAX_PROTECTED_PATHS, the session's `protected_paths` and
-    the camera calibration directory (FRANKA_CALIBRATION_DIR)."""
+    backend-specific protected paths supplied by the operator."""
     listed = [*os.environ.get(SITE_PATHS_ENVIRONMENT, '').split(':'),
-              *config.backend_options.get('protected_paths', ()), os.environ.get('FRANKA_CALIBRATION_DIR', '')]
+              *config.backend_options.get('protected_paths', ())]
     paths = []
     for entry in filter(None, listed):
         path = Path(entry).expanduser()
@@ -140,7 +140,7 @@ def settings(config, workspace, socket):
             'allowUnsandboxedCommands': False,
             'filesystem': {'allowWrite': [str(workspace)],
                            'denyRead': [str(p) for p in (*protected, *HIDDEN_SOCKETS)]},
-            # Internet over the sandbox's HTTP(S) proxy; loopback (the robot bridges) stays closed.
+            # Internet uses the sandbox proxy; host controller endpoints stay unreachable.
             'network': {'allowAllUnixSockets': True, 'allowLocalBinding': False, 'allowedDomains': ['*']},
         },
         'autoUpdates': False, 'includeCoAuthoredBy': False, 'cleanupPeriodDays': 3650,

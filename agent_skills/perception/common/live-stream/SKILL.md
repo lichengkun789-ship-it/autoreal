@@ -20,9 +20,9 @@ Older data is deleted as time goes by; copy what you need to keep into `output/`
 
 ## Two ways in
 
-- **Directly, as a tool:** `franka_stream {seconds_ago: [0, 30, 120]}` returns the frames from
+- **Directly, as a tool:** `{{ robot.stream }} {seconds_ago: [0, 30, 120]}` returns the frames from
   those moments (all cameras, or `cameras: [...]`), labelled with their age, plus the arm
-  state then; `franka_stream {sheet: {seconds: 120, count: 12}}` returns one contact
+  state then; `{{ robot.stream }} {sheet: {seconds: 120, count: 12}}` returns one contact
   sheet per camera over the last two minutes. No motion, no arming needed.
 - **As files,** for code and bulk analysis: `python -m api.stream ...` below, or read the
   images under `runtime/stream/` directly.
@@ -30,12 +30,12 @@ Older data is deleted as time goes by; copy what you need to keep into `output/`
 ## When to look
 
 - **Before any motion that follows a pause**, check that the scene still matches what
-  you planned against: `franka_stream` with `seconds_ago: [0]` (or call
+  you planned against: `{{ robot.stream }}` with `seconds_ago: [0]` (or call
   `{{ robot.observe }}`, which also saves depth for localization). If something
   moved, re-localize before moving; never act on stale positions.
-- **What changed while you were away**: `franka_stream` with a `sheet` over the time you
+- **What changed while you were away**: `{{ robot.stream }}` with a `sheet` over the time you
   were away, or `python -m api.stream changes left --seconds 300` to list the moments the
-  image changed and then `franka_stream {seconds_ago: [...]}` at those moments.
+  image changed and then `{{ robot.stream }} {seconds_ago: [...]}` at those moments.
   Compare with `python -m api.stream robot --seconds 120`: changes while the arm was
   still were caused by something else (a person, a falling object).
 - **After a motion or a script run**, review the frames during it (grasp slip, a

@@ -15,7 +15,6 @@ SITE = ('/opt/robot-controller', '/srv/robot-sdk-env')  # an operator's robot st
 @pytest.fixture
 def deployed(tmp_path, monkeypatch):
     monkeypatch.setenv('RAX_PROTECTED_PATHS', ':'.join(SITE))
-    monkeypatch.setenv('FRANKA_CALIBRATION_DIR', str(tmp_path/'calibration'))
     key = tmp_path/'anthropic.key'
     key.write_text('sk-ant-api-secret')
     key.chmod(0o600)
@@ -51,7 +50,7 @@ def test_settings_confine_tools_to_the_workspace_and_sandbox_bash(deployed):
     assert sandbox['enabled'] and sandbox['failIfUnavailable'] and not sandbox['allowUnsandboxedCommands']
     assert sandbox['filesystem']['allowWrite'] == [workspace]
     denied = sandbox['filesystem']['denyRead']
-    site = [Path(p) for p in (*SITE, '/opt/second-robot-config.yaml', config.root.parent/'calibration')]
+    site = [Path(p) for p in (*SITE, '/opt/second-robot-config.yaml')]
     for protected in (launcher.PROJECT, Path.home()/'.claude', Path.home()/'.ssh', *site,
                       config.root/'model-relay.json', config.root/'mcp.jsonl'):
         assert str(protected) in denied
@@ -70,7 +69,6 @@ def test_relative_protected_paths_are_refused(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="absolute: 'robot-sdk'"):
         launcher.protected_paths(configuration(tmp_path))
     monkeypatch.delenv('RAX_PROTECTED_PATHS')
-    monkeypatch.delenv('FRANKA_CALIBRATION_DIR', raising=False)
     assert launcher.site_paths(configuration(tmp_path)) == []
 
 

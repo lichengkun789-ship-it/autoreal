@@ -69,6 +69,7 @@ function badgeFor(status, running) {
 
 function renderSessions(value) {
   state.sessions = value.sessions;
+  $('disarm-all').hidden = !value.sessions.some((s) => s.motion_available);
   $('running-badge').textContent = value.running.length ? `running: ${value.running.join(', ')}` : 'no session running';
   $('running-badge').className = value.running.length ? 'badge ok' : 'badge';
   const list = $('sessions');
@@ -80,7 +81,7 @@ function renderSessions(value) {
       onclick: () => { state.selected = s.id; localStorage.setItem('selected', s.id); state.frameId = null; refresh(); },
     },
       el('div', { class: 'row' }, el('strong', {}, s.task), badgeFor(s.status, s.running),
-        s.motion.armed ? el('span', { class: 'badge bad' }, 'ARMED') : null),
+        s.motion_available && s.motion.armed ? el('span', { class: 'badge bad' }, 'ARMED') : null),
       el('div', { class: 'muted' }, `${s.id} · ${s.effort} · ${fmt(s.usage.calls)} calls`)));
   }
   renderDetail();
@@ -89,7 +90,8 @@ function renderSessions(value) {
 function renderDetail() {
   const s = state.sessions.find((x) => x.id === state.selected);
   const detail = $('detail');
-  for (const id of ['safety', 'cameras-section', 'activity-section']) $(id).hidden = !s;
+  for (const id of ['cameras-section', 'activity-section']) $(id).hidden = !s;
+  $('safety').hidden = !s || !s.motion_available;
   if (!s) { detail.replaceChildren(el('h2', {}, 'Session'), el('p', { class: 'muted' }, 'Select a session.')); return; }
   const anyRunning = state.sessions.some((x) => x.running);
   const launched = !['configured'].includes(s.status);
@@ -115,7 +117,7 @@ function renderDetail() {
         if (confirm('Stop this session? The agent and robot service are shut down.')) act('stop');
       } }, 'Stop')),
     commandBlock('Start interactively (paste into a terminal)', s.commands.interactive, true),
-    commandBlock('Arm this session (in a terminal; asks you to type ARM)', s.commands.arm),
+    ...(s.motion_available ? [commandBlock('Arm this session (in a terminal; asks you to type ARM)', s.commands.arm)] : []),
     commandBlock('Resume interactively', s.commands.resume),
     commandBlock('Headless', s.commands.headless),
   );
@@ -134,30 +136,16 @@ async function act(action) {
 }
 
 function renderRobot(value) {
-  const arm = value.arm, grip = value.gripper;
-  const ok = arm.ok && grip.ok;
-  $('robot-badge').textContent = arm.ok ? (grip.ok ? 'robot bridges ok' : 'gripper problem') : 'ARM BRIDGE DOWN';
-  $('robot-badge').className = ok ? 'badge ok' : 'badge bad';
-  const rows = [];
-  if (arm.ok) {
-    rows.push(['TCP (m)', arm.tcp_position.map((v) => v.toFixed(4)).join(', ')]);
-    rows.push(['TCP quat', arm.tcp_quaternion.map((v) => v.toFixed(3)).join(', ')]);
-    rows.push(['joints', arm.joints.map((v) => v.toFixed(3)).join(', ')]);
-    rows.push(['controller', `${arm.backend} · policy ${arm.policy_running ? 'running' : 'idle'}`]);
-  } else rows.push(['arm', el('span', { style: 'color:var(--bad)' }, arm.error)]);
-  if (grip.ok || grip.width !== undefined) {
-    rows.push(['gripper', `${(grip.width * 1000).toFixed(1)} mm / ${(grip.max_width * 1000).toFixed(1)} mm` +
-      `${grip.is_grasped ? ' · grasped' : ''}${grip.is_moving ? ' · moving' : ''}` +
-      `${grip.stale ? ' · STALE (gripper client dead)' : ''}`]);
-  } else rows.push(['gripper', el('span', { style: 'color:var(--bad)' }, grip.error)]);
-  $('robot').replaceChildren(el('table', { class: 'kv' }, rows.map(([k, v]) => el('tr', {}, el('td', {}, k), el('td', {}, v)))));
+  $('robot-badge').textContent = value.available ? 'telemetry available' : 'session-scoped telemetry';
+  $('robot-badge').className = value.available ? 'badge ok' : 'badge';
+  $('robot').replaceChildren(el('pre', {}, JSON.stringify(value, null, 2)));
 }
 
 async function refreshFrame() {
   if (!state.selected) return;
   const { frame } = await api(`/api/session/${state.selected}/frame`);
   const box = $('cameras');
-  if (!frame) { $('frame-info').textContent = 'No frames yet (the agent captures them with franka_observe).'; box.replaceChildren(); return; }
+  if (!frame) { $('frame-info').textContent = 'No observation frames yet.'; box.replaceChildren(); return; }
   $('frame-info').textContent = `${frame.frame_id} · ${when(frame.time)} · ${frame.count} frames in session`;
   if (frame.frame_id === state.frameId) return;
   state.frameId = frame.frame_id;
@@ -206,7 +194,7 @@ function renderRequests(value) {
   const box = $('requests');
   const open = value.sessions.flatMap((s) => (s.requests || []).map((r) => ({ ...r, session: s.id, task: s.task })));
   box.hidden = open.length === 0;
-  document.title = open.length ? `(${open.length}) Agent needs you - Franka` : 'Franka operator';
+  document.title = open.length ? `(${open.length}) Agent needs you - AutoRAX` : 'AutoRAX operator';
   if (open.some((r) => !seenRequests.has(r.id))) beep();
   open.forEach((r) => seenRequests.add(r.id));
   if (box.contains(document.activeElement)) return;  // do not wipe a reply being typed

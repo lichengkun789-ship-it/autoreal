@@ -1,0 +1,2 @@
+-r requirements.txt
+piper_sdk==0.6.2

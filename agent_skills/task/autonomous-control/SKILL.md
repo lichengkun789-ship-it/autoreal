@@ -28,7 +28,7 @@ current observations to adapt to new layouts, rather than blindly replaying one 
 actions.
 
 - Hard-code reusable motion functions and decision rules on the MCP tools
-  (`franka_move_pose`, `franka_move_joints`, `{{ robot.gripper }}`) when suitable;
+  (`{{ robot.move }}`, `{{ robot.move_joints }}`, `{{ robot.gripper }}`) when suitable;
   [robot-interface](../robot-interface/SKILL.md) has the frames and limits.
 {% if gemini %}
 - Use Gemini when simple perception rules are insufficient. Write your own prompts and
@@ -81,7 +81,7 @@ steps and full runs:
 def main(ctx):
     reply = ctx.value("{{ robot.observe }}")
     # Your observation–decision–action loop, e.g.:
-    # ctx.value("franka_move_pose", position=[x, y, z], quaternion=q)
+    # ctx.value("{{ robot.move }}", position=[x, y, z], quaternion=q)
     # ctx.value("{{ robot.gripper }}", action="grasp", width=0.0, force=30)
     return {"ok": True}
 
@@ -122,7 +122,7 @@ retrying the same motion. Observations save full-resolution frames under
 There is no formal evaluation: you judge the controller by running it end to end on
 the real scene.
 
-1. Bring the robot to a neutral state (gripper open, `franka_move_joints` preset
+1. Bring the robot to a neutral state (gripper open, `{{ robot.move_joints }}` preset
    `home`), then call `request_operator` with kind `reset` and say what you need, e.g.
    "please put the cubes back at new positions on the table". Wait for the answer.
 2. Commit the controller version (`git` inside `code/<project>/`) and run it once,

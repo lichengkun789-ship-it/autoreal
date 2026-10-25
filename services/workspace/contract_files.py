@@ -4,7 +4,9 @@ from pathlib import Path
 
 
 def describe(setup) -> str:
-    if setup.camera_geometry:
+    if not setup.camera_available:
+        geometry = 'This backend currently supplies measured robot state and no camera images.'
+    elif setup.camera_geometry:
         geometry = 'RGB images, depth and camera calibration are supplied.'
     else:
         geometry = 'Only RGB images and measured robot state are supplied.'

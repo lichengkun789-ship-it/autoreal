@@ -15,13 +15,13 @@ skill, and an absent layer is skipped:
 | `task/` | `manual-robot-control`, `autonomous-control`, `experience-memory` |
 | `perception/common/` | `live-stream`, `wrist-camera-inspection` |
 | `perception/<mode>/` | perception for one observation mode, any robot (none yet) |
-| `perception/<mode>-<robot>/` | `object-localization` for that mode and robot (`depth-franka`, `rgb-only-franka`) |
+| `perception/<mode>-<robot>/` | robot-specific localization for that observation mode, when implemented |
 | `control/common/` | control for any robot (none yet) |
-| `control/<robot>/` | the robot's `robot-interface` and motion skills (`franka`) |
+| `control/<robot>/` | the robot's `robot-interface` and hardware-specific skills (`piper`) |
 | `auto-research/` | `gemini` |
 
 `<mode>` is `depth` or `rgb-only` (from the observation profile) and `<robot>` is the
-backend key (`franka`). Agents see one flat `.agents/skills/` with stable, robot-neutral
+backend key (`piper`). Agents see one flat `.agents/skills/` with stable, robot-neutral
 names, so task skills link to `robot-interface` or `object-localization` without
 branching on the robot or the observation mode.
 

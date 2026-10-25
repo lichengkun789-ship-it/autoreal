@@ -1,4 +1,4 @@
-"""Loopback-only operator dashboard for real-Franka agent sessions.
+"""Loopback-only operator dashboard for AutoRAX real-robot sessions.
 
 Privileged: it launches paid agent sessions, arms robot motion and reads every artifact.
 Never give its URL or token to an agent. The agent's sandbox cannot reach host loopback
@@ -24,14 +24,14 @@ from services.dashboard.sessions import Sessions
 STATIC = Path(__file__).resolve().parent/'static'
 ASSETS = {'/': ('index.html', 'text/html; charset=utf-8'),
           '/app.js': ('app.js', 'application/javascript; charset=utf-8')}
-COOKIE = 'franka_dashboard_token'
+COOKIE = 'autorax_dashboard_token'
 MAX_BODY = 1 << 20
 
 
 class Handler(BaseHTTPRequestHandler):
     sessions: Sessions
     token: str
-    server_version = 'FrankaOperator/1.0'
+    server_version = 'AutoRAXOperator/1.0'
 
     def log_message(self, format_string, *args):
         if not self.path.startswith(('/api/robot', '/api/session/')) or 'POST' in self.requestline:

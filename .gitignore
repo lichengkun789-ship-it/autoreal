@@ -23,3 +23,10 @@
 .vscode/
 # Isolated local feature checkouts.
 /.worktrees/
+
+# Local environments and secrets.
+.env
+.env.*
+!.env.example
+.venv/
+.venv-*/

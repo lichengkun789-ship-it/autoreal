@@ -4,9 +4,8 @@
     python scripts/arm_robot.py <session> disarm
     python scripts/arm_robot.py <session> status
 
-Arm only with a person at the emergency stop and the workspace clear. Disarming stops a
-running Cartesian move within one servo period (the arm holds); the agent cannot arm
-itself because its sandbox cannot write the session root.
+Arm only with a person at the emergency stop and the workspace clear. The agent cannot
+arm itself because its sandbox cannot write the session root.
 """
 import argparse
 import json
@@ -14,7 +13,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from services.franka import arming  # noqa: E402
+from services import arming  # noqa: E402
 
 
 def session_root(path):
@@ -33,6 +32,10 @@ def main():
     if not (root/'operator-input.json').is_file():
         parser.error(f'{root} is not a session directory')
     if args.action == 'arm':
+        from services.workspace.setup import ROBOT_FACTS
+        config = json.loads((root/'operator-input.json').read_text())
+        if not ROBOT_FACTS.get(config.get('robot'), {}).get('motion_available'):
+            parser.error(f"{config.get('robot')} backend exposes no motion tools in this milestone")
         if not args.yes and input('Person at the emergency stop and workspace clear? Type ARM: ').strip() != 'ARM':
             print('not armed')
             return

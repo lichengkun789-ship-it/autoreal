@@ -9,9 +9,21 @@ VOCAB = Vocab(memory='memory', notes='memory/PROGRESS.md', frames='runtime/frame
 SKILL_LAYERS = ('task', 'perception/common', 'perception/{perception}', 'perception/{perception}-{robot}',
                 'control/common', 'control/{robot}', 'auto-research')
 
-# No OpenRouter key, no gemini_generate tool: leave its skill out instead of advertising it.
-AGENT = Recipe('real-robot/agent', PROJECT / 'auto_research_agent', SKILL_LAYERS, vocab=VOCAB,
-               omit_skills=(SkillRule('gemini', lambda setup: not setup.gemini),))
+# Skills advertise capabilities. Leave a skill out when the selected backend cannot
+# provide that capability yet, instead of teaching the agent about unavailable tools.
+AGENT = Recipe(
+    'real-robot/agent',
+    PROJECT / 'auto_research_agent',
+    SKILL_LAYERS,
+    vocab=VOCAB,
+    omit_skills=(
+        SkillRule('gemini', lambda setup: not setup.gemini),
+        SkillRule('manual-robot-control', lambda setup: not setup.motion_available),
+        SkillRule('autonomous-control', lambda setup: not setup.motion_available),
+        SkillRule('live-stream', lambda setup: not setup.camera_available),
+        SkillRule('wrist-camera-inspection', lambda setup: not setup.camera_available),
+    ),
+)
 
 
 def recipe_for(options=frozenset()):

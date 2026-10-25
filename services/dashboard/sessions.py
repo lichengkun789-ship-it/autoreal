@@ -1,7 +1,7 @@
 """Operator-side session and robot access for the dashboard (trusted, never agent-facing).
 
 Everything here reads session artifacts directly or runs the same operator scripts a human
-would: scripts/configure_session.py, scripts/start_agent.sh and services.franka.arming.
+would: scripts/configure_session.py, scripts/start_agent.sh and services.arming.
 """
 from __future__ import annotations
 
@@ -14,10 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from urllib.error import URLError
-from urllib.request import Request, urlopen
-
-from services.franka import arming
+from services import arming
 from services.controller import operator
 from services.storage_root import PROJECT, artifact_root
 
@@ -29,8 +26,6 @@ WORKSPACE_NAME = 'agent-workspace'
 HOME_NAME = 'claude-home'
 TAIL_BYTES = 256 * 1024
 STOP_GRACE_SECONDS = 45  # the launcher stops the agent, then the robot service (30 s grace)
-ARM_URL = 'http://127.0.0.1:50054'
-GRIPPER_URL = 'http://127.0.0.1:50053'
 
 
 def read_json(path, default=None):
@@ -86,12 +81,10 @@ def truncate(value, limit):
 
 
 class Sessions:
-    def __init__(self, *, project=PROJECT, python=None, launcher=None, http_post=None, http_get=None):
+    def __init__(self, *, project=PROJECT, python=None, launcher=None):
         self.project = Path(project)
         self.python = python or sys.executable
         self.launcher = launcher or ['bash', str(self.project/'scripts/start_agent.sh')]
-        self.http_post = http_post or _http_post
-        self.http_get = http_get or _http_get
         self.lock = threading.Lock()
 
     # ----- discovery -------------------------------------------------------------------
@@ -150,6 +143,8 @@ class Sessions:
         return totals
 
     def summary(self, root):
+        from services.workspace.setup import ROBOT_FACTS
+
         config = read_json(root/'operator-input.json', {}) or {}
         lifecycle = read_json(root/'agent-lifecycle.json', {}) or {}
         process = self.process(root)
@@ -158,6 +153,7 @@ class Sessions:
             status = f'{status} (launcher gone)'
         return {
             'id': root.name, 'task': config.get('task'), 'robot': config.get('robot'),
+            'motion_available': bool(ROBOT_FACTS.get(config.get('robot'), {}).get('motion_available')),
             'created': (root/'operator-input.json').stat().st_mtime,
             'status': status, 'returncode': lifecycle.get('returncode'),
             'started_at': lifecycle.get('started_at'), 'finished_at': lifecycle.get('finished_at'),
@@ -196,7 +192,7 @@ class Sessions:
                    '--agent-effort', str(form.get('effort') or 'max'),
                    '--agent-provider', str(form.get('provider') or 'claude-login'),
                    '--session-hours', str(float(form.get('session_hours') or 4)),
-                   '--observation-profile', str(form.get('observation_profile') or 'rgbd'),
+                   '--observation-profile', str(form.get('observation_profile') or 'state-only'),
                    '--subagents', str(int(form.get('subagents') or 0))]
         if form.get('model'):
             command += ['--agent-model', str(form['model'])]
@@ -264,6 +260,10 @@ class Sessions:
         if confirmed is not True:
             raise PermissionError('confirm that a person is at the emergency stop and the workspace is clear')
         root = self.root(session_id)
+        from services.workspace.setup import ROBOT_FACTS
+        robot = (read_json(root/'operator-input.json', {}) or {}).get('robot')
+        if not ROBOT_FACTS.get(robot, {}).get('motion_available'):
+            raise RuntimeError(f'{robot} backend exposes no motion tools in this milestone')
         if minutes is not None:
             minutes = float(minutes)
             if not 0 < minutes <= 24 * 60:
@@ -288,33 +288,15 @@ class Sessions:
         return {'disarmed': disarmed, 'hold': self.hold()}
 
     def hold(self):
-        try:
-            self.http_post(ARM_URL + '/hold', {})
-            return 'ok'
-        except Exception as exc:  # report, never mask the disarm itself
-            return f'hold failed: {exc}'
+        return 'disarmed; the active backend re-checks operator arming during motion'
 
     # ----- robot ---------------------------------------------------------------------------
     def robot(self):
-        from services.franka.kinematics import link8_to_tcp
-        value = {'time': time.time()}
-        try:
-            arm = self.http_get(ARM_URL + '/state')
-            tcp_p, tcp_q = link8_to_tcp(arm['arm_pos'], arm['arm_quat'])
-            value['arm'] = {'ok': True, 'tcp_position': [round(float(v), 4) for v in tcp_p],
-                            'tcp_quaternion': [round(float(v), 4) for v in tcp_q],
-                            'joints': [round(float(v), 4) for v in arm['arm_joint_position']],
-                            'policy_running': bool(arm.get('policy_running')),
-                            'backend': arm.get('controller_backend')}
-        except Exception as exc:
-            value['arm'] = {'ok': False, 'error': str(exc)}
-        try:
-            grip = self.http_get(GRIPPER_URL + '/state')
-            value['gripper'] = {'ok': not grip.get('stale'), **{k: grip.get(k) for k in
-                                ('width', 'max_width', 'is_grasped', 'is_moving', 'stale', 'age')}}
-        except Exception as exc:
-            value['gripper'] = {'ok': False, 'error': str(exc)}
-        return value
+        return {
+            'time': time.time(),
+            'available': False,
+            'reason': 'robot telemetry is session-scoped; inspect the active session status',
+        }
 
     # ----- frames and activity ---------------------------------------------------------
     def frames_dir(self, root):
@@ -408,18 +390,3 @@ class Sessions:
             'launcher_log': tail_lines(root/'launcher.log', 60),
             'camera_log': tail_lines(root/'camera-server.log', 20),
         }
-
-
-def _http_post(url, payload, timeout=3.0):
-    request = Request(url, data=json.dumps(payload).encode(), method='POST',
-                      headers={'Content-Type': 'application/json'})
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read() or b'{}')
-
-
-def _http_get(url, timeout=1.0):
-    try:
-        with urlopen(url, timeout=timeout) as response:
-            return json.loads(response.read())
-    except URLError as exc:
-        raise ConnectionError(f'{url.rsplit("/", 1)[0]} unreachable: {exc.reason}') from exc

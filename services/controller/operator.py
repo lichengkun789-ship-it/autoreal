@@ -1,4 +1,4 @@
-"""Agent -> operator requests (help, scene reset) answered from the dashboard or `franka reply`.
+"""Agent requests answered from the operator dashboard or robot operator CLI.
 
 Files live in the session root, outside the agent's writable workspace:
 

@@ -4,26 +4,27 @@ from dataclasses import dataclass
 # Words shared sources use for the robot instead of branching on it. Tool names are the
 # backend's MCP tools (services/backends.py); keep them in sync with the backend.
 ROBOT_FACTS = {
-    'franka': {'name': 'Franka FR3', 'status': 'franka_status', 'observe': 'franka_observe',
-               'move': 'franka_move_pose', 'gripper': 'franka_gripper',
-               'pixel': 'franka_pixel_to_position',
-               'tools': ('franka_status', 'franka_observe', 'franka_move_pose', 'franka_move_joints',
-                         'franka_gripper', 'franka_pixel_to_position', 'franka_stream', 'franka_hold'),
-               'overview_camera': 'left', 'overview': 'left exterior camera',
-               'cameras': ('left', 'right', 'wrist')},
+    'piper': {'name': 'dual Piper system', 'status': 'piper_status', 'observe': 'piper_observe',
+              'move': None, 'move_joints': None, 'gripper': None, 'pixel': None,
+              'stream': None,
+              'tools': ('piper_status', 'piper_observe', 'piper_check_joints'),
+              'overview_camera': None, 'overview': 'read-only robot-state observation',
+              'cameras': (), 'camera_available': False, 'motion_available': False},
     'mock': {'name': 'mock robot', 'status': 'status', 'observe': 'mock_observe', 'move': 'mock_move',
-             'gripper': 'mock_move', 'pixel': 'mock_observe', 'tools': ('mock_observe', 'mock_move'),
-             'overview_camera': 'none', 'overview': 'no camera', 'cameras': ()},
+             'move_joints': 'mock_move', 'gripper': 'mock_move', 'pixel': 'mock_observe',
+             'stream': None, 'tools': ('mock_observe', 'mock_move'), 'overview_camera': 'none',
+             'overview': 'no camera', 'cameras': (), 'camera_available': False,
+             'motion_available': True},
 }
 CLIS = ('claude',)
 
 
 @dataclass(frozen=True)
 class Setup:
-    robot: str = 'franka'
+    robot: str = 'piper'
     task: str | None = None
     cli: str = 'claude'
-    observation_profile: str = 'rgbd'
+    observation_profile: str = 'state-only'
     subagents: int = 0
     gemini: bool = True
 
@@ -32,7 +33,7 @@ class Setup:
             raise ValueError(f'Unknown robot {self.robot!r}')
         if self.cli not in CLIS:
             raise ValueError('Unknown agent CLI')
-        if self.observation_profile not in ('rgbd', 'rgb-only'):
+        if self.observation_profile not in ('rgbd', 'rgb-only', 'state-only'):
             raise ValueError('Unknown observation profile')
 
     @classmethod
@@ -42,6 +43,14 @@ class Setup:
     @property
     def camera_geometry(self):
         return self.observation_profile == 'rgbd'
+
+    @property
+    def camera_available(self):
+        return bool(ROBOT_FACTS[self.robot]['camera_available'])
+
+    @property
+    def motion_available(self):
+        return bool(ROBOT_FACTS[self.robot]['motion_available'])
 
     @property
     def tools(self):

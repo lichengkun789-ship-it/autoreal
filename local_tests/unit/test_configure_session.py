@@ -1,4 +1,4 @@
-"""scripts/configure_session.py: a Franka session carries the operator's camera configuration."""
+"""scripts/configure_session.py keeps Piper wiring in operator-owned configuration."""
 import json
 import os
 from pathlib import Path
@@ -16,19 +16,20 @@ def configure(tmp_path, *args, **environment):
                           timeout=60)
 
 
-def test_a_franka_session_without_cameras_is_refused(tmp_path):
+def test_a_piper_session_without_arm_configuration_is_refused(tmp_path):
     result = configure(tmp_path)
     assert result.returncode == 2
-    assert 'a franka session needs its cameras' in result.stderr
+    assert 'a piper session needs left and right arm CAN names' in result.stderr
     assert not (tmp_path/'sessions').exists()
 
 
 def test_backend_options_default_to_the_environment_file(tmp_path):
-    example = PROJECT/'examples/franka.json'
+    example = PROJECT/'examples/piper.json'
     result = configure(tmp_path, RAX_BACKEND_OPTIONS=str(example))
     assert result.returncode == 0, result.stderr
     saved = json.loads(Path(result.stdout.strip()).read_text())
-    assert saved['robot'] == 'franka'
+    assert saved['robot'] == 'piper'
+    assert saved['observation_profile'] == 'state-only'
     assert saved['backend_options'] == json.loads(example.read_text())
     assert Path(saved['root']).is_relative_to(tmp_path/'sessions')
 

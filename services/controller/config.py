@@ -8,7 +8,7 @@ import re
 
 AGENT_EFFORTS = ('high', 'xhigh', 'max')
 PROVIDERS = ('claude-login', 'openrouter', 'anthropic')
-PROFILES = ('rgbd', 'rgb-only')
+PROFILES = ('rgbd', 'rgb-only', 'state-only')
 
 
 @dataclass(frozen=True)
@@ -16,10 +16,10 @@ class Configuration:
     root: Path                      # session directory under the artifact root
     task: str                       # short task id, e.g. "stack_cups"
     task_description: str = ''      # TASK.md body written by the operator
-    robot: str = 'franka'           # services.backends registry key
+    robot: str = 'piper'            # services.backends registry key
     # Backend-specific operator settings (bridge URLs, cameras, workspace box, ...).
     backend_options: dict = field(default_factory=dict)
-    observation_profile: str = 'rgbd'
+    observation_profile: str = 'state-only'
     agent_provider: str = 'claude-login'
     agent_effort: str = 'xhigh'
     agent_model: str | None = None  # Provider default (Opus 5.5) when unset.

@@ -1,10 +1,10 @@
 """Write a new session configuration under the artifact root; starts nothing.
 
-    python scripts/configure_session.py --task stack_cups --task-file task.md \
-        [--robot franka] [--backend-options franka.json]
+    python scripts/configure_session.py --task TASK --task-file TASK.md \
+        [--robot piper] [--backend-options piper.json]
     bash scripts/start_agent.sh --config <printed path>
 
-A Franka session needs its cameras in the backend options (see examples/franka.json).
+The Piper backend needs its left and right CAN names (see examples/piper.json).
 --backend-options defaults to $RAX_BACKEND_OPTIONS, which also serves dashboard sessions.
 """
 import argparse
@@ -25,10 +25,10 @@ def main():
     parser.add_argument('--task', required=True, help='Short task id, e.g. stack_cups')
     parser.add_argument('--task-file', type=Path, help='Markdown task description (TASK.md body)')
     parser.add_argument('--task-text', help='Task description text, instead of --task-file')
-    parser.add_argument('--robot', default='franka')
+    parser.add_argument('--robot', default='piper')
     parser.add_argument('--backend-options', type=Path, default=os.environ.get('RAX_BACKEND_OPTIONS') or None,
                         help='JSON file of backend settings (default: $RAX_BACKEND_OPTIONS)')
-    parser.add_argument('--observation-profile', choices=PROFILES, default='rgbd')
+    parser.add_argument('--observation-profile', choices=PROFILES, default='state-only')
     parser.add_argument('--agent-provider', choices=PROVIDERS, default='claude-login')
     parser.add_argument('--agent-effort', choices=AGENT_EFFORTS, default='xhigh')
     parser.add_argument('--agent-model')
@@ -40,9 +40,9 @@ def main():
         parser.error('use --task-file or --task-text, not both')
     description = args.task_file.read_text() if args.task_file else (args.task_text or '')
     options = json.loads(args.backend_options.read_text()) if args.backend_options else {}
-    if args.robot == 'franka' and not options.get('cameras'):
-        parser.error('a franka session needs its cameras: pass --backend-options FILE or set '
-                     'RAX_BACKEND_OPTIONS (see examples/franka.json)')
+    if args.robot == 'piper' and not options.get('arms'):
+        parser.error('a piper session needs left and right arm CAN names: pass --backend-options FILE or set '
+                     'RAX_BACKEND_OPTIONS (see examples/piper.json)')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     root = artifact_root()/'sessions'/f'{stamp}_{args.task}_{secrets.token_hex(3)}'
     config = Configuration(

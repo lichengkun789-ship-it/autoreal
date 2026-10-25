@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "task_id": "replace_me",
+  "required_capabilities": [],
+  "evaluator": "evaluator.py:evaluate"
+}
