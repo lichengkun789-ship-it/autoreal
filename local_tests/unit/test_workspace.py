@@ -58,6 +58,22 @@ def test_piper_motion_workspace_advertises_only_the_bounded_motion_tool(tmp_path
     assert "not general manipulation control" in autonomous
 
 
+def test_piper_rgbd_workspace_advertises_images_without_unimplemented_camera_skills(tmp_path):
+    workspace = tmp_path / "ws"
+    setup = Setup("piper", "generic_task", observation_profile="rgbd")
+    build(recipe_for(), setup, workspace)
+    contract = (workspace / "MCP_SESSION.md").read_text()
+    assert "aligned depth" in contract
+    assert "Base-frame camera extrinsics are not yet available" in contract
+    assert setup.context()["robot"]["camera_available"] is True
+    skills = {path.name for path in (workspace / ".agents/skills").iterdir()}
+    assert "live-stream" not in skills
+    assert "wrist-camera-inspection" not in skills
+    interface = (workspace / ".agents/skills/robot-interface/SKILL.md").read_text()
+    assert "records aligned depth and intrinsics" in interface
+    assert "No camera image is returned" not in interface
+
+
 def test_subagent_text_only_with_subagents(tmp_path):
     build(recipe_for(), Setup("piper", subagents=0), tmp_path / "none")
     build(recipe_for(), Setup("piper", subagents=2), tmp_path / "two")

@@ -1,12 +1,16 @@
 """Piper backend contract tests use fakes and never open CAN or command hardware."""
 
+import base64
 from copy import deepcopy
+import json
 import math
 from types import SimpleNamespace
 
+from PIL import Image
 import pytest
 
 from services.piper.backend import PiperBackend
+from services.piper.camera import CameraFrame, camera_specs
 from services.piper.probe import inspect_can_interface, run_readonly_probe
 from services.piper.sdk_reader import PiperSdkReader
 
@@ -48,8 +52,37 @@ class FakeReader:
         self.closed = True
 
 
-def config(**options):
-    return SimpleNamespace(backend_options=options)
+def config(*, root=None, observation_profile="state-only", **options):
+    return SimpleNamespace(
+        backend_options=options,
+        root=root,
+        observation_profile=observation_profile,
+    )
+
+
+class FakeCameras:
+    def __init__(self, *, depth=False):
+        self.depth = depth
+        self.calls = []
+        self.closed = False
+
+    def capture(self, names, *, timeout_ms):
+        self.calls.append((tuple(names), timeout_ms))
+        return {
+            name: CameraFrame(
+                name=name,
+                serial=f"serial-{name}",
+                color_rgb=Image.new("RGB", (8, 6), (40, 80, 120)),
+                depth_mm=Image.new("I;16", (8, 6), 500) if self.depth else None,
+                captured_at=100.0,
+                device_timestamp_ms=1234.5,
+                intrinsics={"width": 8, "height": 6, "fx": 4.0, "fy": 4.0},
+            )
+            for name in names
+        }
+
+    def close(self):
+        self.closed = True
 
 
 def test_tools_are_read_only_and_status_requires_fresh_healthy_feedback():
@@ -114,6 +147,93 @@ def test_configuration_validation_and_close():
         backend.validate("piper_check_joints", {"arm": "left"})
     backend.close()
     assert reader.closed
+
+
+def test_rgb_observation_returns_images_and_writes_auditable_frame(tmp_path):
+    reader = FakeReader()
+    cameras = FakeCameras()
+    backend = PiperBackend(
+        config(
+            root=tmp_path,
+            observation_profile="rgb-only",
+            cameras=[
+                {"name": "cam_high", "serial": "serial-cam_high"},
+                {"name": "cam_right_wrist", "serial": "serial-cam_right_wrist"},
+            ],
+            agent_image_width=4,
+        ),
+        reader=reader,
+        cameras=cameras,
+        clock=lambda: 100.0,
+    )
+    observe = next(tool for tool in backend.tools() if tool["name"] == "piper_observe")
+    enum = observe["inputSchema"]["properties"]["cameras"]["items"]["enum"]
+    assert enum == ["cam_high", "cam_right_wrist"]
+    assert backend.status()["camera_observation"] == {
+        "available": True,
+        "profile": "rgb-only",
+        "cameras": ["cam_high", "cam_right_wrist"],
+    }
+
+    value, images = backend.call("piper_observe", {"cameras": ["cam_high"]})
+    assert cameras.calls == [(('cam_high',), 3000)]
+    assert value["images_in_order"] == ["cam_high"]
+    assert value["max_joint_movement_during_capture_rad"] == 0.0
+    assert len(images) == 1
+    assert images[0]["type"] == "image" and images[0]["mimeType"] == "image/jpeg"
+    assert base64.b64decode(images[0]["data"]).startswith(b"\xff\xd8")
+
+    frame_dir = tmp_path / "agent-workspace" / value["directory"]
+    assert (frame_dir / "cam_high.jpg").is_file()
+    metadata = json.loads((frame_dir / "meta.json").read_text())
+    assert metadata["cameras"]["cam_high"]["serial"] == "serial-cam_high"
+    assert metadata["cameras"]["cam_high"]["depth"] is None
+    assert "data" not in (frame_dir / "meta.json").read_text()
+    backend.close()
+    assert cameras.closed and reader.closed
+
+
+def test_rgbd_observation_saves_uint16_depth(tmp_path):
+    backend = PiperBackend(
+        config(
+            root=tmp_path,
+            observation_profile="rgbd",
+            cameras=[{"name": "cam_high", "serial": "serial-cam_high"}],
+        ),
+        reader=FakeReader(),
+        cameras=FakeCameras(depth=True),
+    )
+    value, _ = backend.call("piper_observe", {})
+    frame_dir = tmp_path / "agent-workspace" / value["directory"]
+    metadata = json.loads((frame_dir / "meta.json").read_text())
+    assert metadata["depth_units"] == "mm (uint16, 0 = invalid)"
+    assert (frame_dir / metadata["cameras"]["cam_high"]["depth"]).is_file()
+    with Image.open(frame_dir / "cam_high_depth.png") as depth:
+        assert depth.getpixel((0, 0)) == 500
+
+
+def test_camera_configuration_is_explicit_and_validated(tmp_path):
+    with pytest.raises(ValueError, match="non-empty list"):
+        PiperBackend(
+            config(root=tmp_path, observation_profile="rgb-only"),
+            reader=FakeReader(),
+        )
+    with pytest.raises(ValueError, match="camera names must be unique"):
+        camera_specs([
+            {"name": "cam_high", "serial": "one"},
+            {"name": "cam_high", "serial": "two"},
+        ])
+    with pytest.raises(ValueError, match="exactly name and serial"):
+        camera_specs([{"name": "cam_high", "serial": "one", "position": "fixed"}])
+
+
+def test_state_only_observe_neither_accepts_camera_selection_nor_opens_cameras():
+    backend = PiperBackend(config(), reader=FakeReader())
+    value, images = backend.call("piper_observe", {})
+    assert images == []
+    assert value["camera_observation"]["available"] is False
+    with pytest.raises(ValueError, match="state-only"):
+        backend.call("piper_observe", {"cameras": ["cam_high"]})
 
 
 def test_sdk_reader_converts_units_and_disconnects_both_arms():

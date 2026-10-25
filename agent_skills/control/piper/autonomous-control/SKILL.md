@@ -8,7 +8,9 @@ description: Build bounded Piper state-feedback scripts from the operator-allowl
 This milestone is not general manipulation control. It permits scripts to sequence
 only the arm, joint, direction, speed, and step envelope admitted by the operator's
 characterization evidence. There is no Agent motor enable, reset, homing, gripper, or
-automatic return operation, and this state-only backend has no camera success signal.
+automatic return operation. Camera observations may be present in `rgb-only` or
+`rgbd` sessions, but images do not provide missing motion, kinematics, calibration,
+contact sensing, or an automatic task-success signal.
 
 Before every step, call `piper_status`, require `ready: true`, inspect the arming and
 remaining motion budgets, and confirm the requested axis and direction appear in

@@ -1,2 +1,4 @@
 -r requirements.txt
+numpy>=1.24,<2
 piper_sdk==0.6.2
+pyrealsense2; sys_platform == "linux" and platform_machine == "x86_64"

@@ -14,8 +14,11 @@ read-only.
 
 - `piper_status {}` returns both arms' measured joints in radians, gripper width in
   metres, feedback timestamps and ages, controller flags, and overall readiness.
-- `piper_observe {}` captures the same fresh state-only observation. No camera image is
-  returned in this milestone.
+- `piper_observe {}` always captures fresh measured state. In an `rgb-only` or `rgbd`
+  session it also returns the configured camera previews and records full-resolution
+  frames; `rgbd` additionally records aligned depth and intrinsics. Inspect the live
+  session contract before assuming images or depth are available. Camera extrinsics
+  are not supplied unless the contract explicitly says otherwise.
 - `piper_check_joints {arm, positions}` checks six absolute joint targets in radians
   against configured joint-limit margins and the per-call delta cap. `dry_run: true`
   means no command was sent.

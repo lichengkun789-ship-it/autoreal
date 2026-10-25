@@ -5,8 +5,10 @@ description: Request and verify one operator-admitted Piper joint step from meas
 
 # Supervised bounded Piper control
 
-This state-only milestone exposes no camera, gripper, homing, or general trajectory
-tool. Use it only to characterize and verify the specific single-joint moves listed by
+This motion milestone exposes no gripper, homing, or general trajectory tool. Camera
+observations may be available depending on the live observation profile, but they do
+not widen the permitted motion envelope. Use this skill only to characterize and
+verify the specific single-joint moves listed by
 `piper_status.agent_motion.allowed_moves`.
 
 1. Call `piper_status`. Require `ready: true`, a live arming lease, remaining command
@@ -22,5 +24,6 @@ tool. Use it only to characterize and verify the specific single-joint moves lis
    automatically.
 
 An MCP success means the bounded command and software-hold checks passed. It does not
-mean a manipulation task succeeded. With no camera observation, report only facts
+mean a manipulation task succeeded. Report success only from evidence actually
+available in the live session; without camera or task sensors, report only facts
 supported by joint and controller feedback.

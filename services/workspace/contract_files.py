@@ -7,7 +7,8 @@ def describe(setup) -> str:
     if not setup.camera_available:
         geometry = 'This backend currently supplies measured robot state and no camera images.'
     elif setup.camera_geometry:
-        geometry = 'RGB images, depth and camera calibration are supplied.'
+        geometry = ('RGB images, aligned depth, and camera intrinsics are supplied. '
+                    'Base-frame camera extrinsics are not yet available.')
     else:
         geometry = 'Only RGB images and measured robot state are supplied.'
     listing = ('Tools: ' + ', '.join(f'`{name}`' for name in setup.tools)

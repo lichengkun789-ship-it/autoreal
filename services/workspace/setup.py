@@ -10,8 +10,10 @@ ROBOT_FACTS = {
               'stream': None,
               'tools': ('piper_status', 'piper_observe', 'piper_check_joints', 'piper_move_joint'),
               'motion_tools': ('piper_move_joint',),
-              'overview_camera': None, 'overview': 'read-only robot-state observation',
-              'cameras': (), 'camera_available': False, 'motion_available': True,
+              'overview_camera': 'cam_high', 'overview': 'fixed and wrist RealSense views',
+              'cameras': ('cam_high', 'cam_right_wrist', 'cam_left_wrist'),
+              'camera_available': True, 'stream_available': False,
+              'wrist_camera_inspection_available': False, 'motion_available': True,
               'motion_requires_opt_in': True},
     'mock': {'name': 'mock robot', 'status': 'status', 'observe': 'mock_observe', 'move': 'mock_move',
              'move_joints': 'mock_move', 'gripper': 'mock_move', 'pixel': 'mock_observe',
@@ -56,7 +58,18 @@ class Setup:
 
     @property
     def camera_available(self):
-        return bool(ROBOT_FACTS[self.robot]['camera_available'])
+        return (self.observation_profile != 'state-only'
+                and bool(ROBOT_FACTS[self.robot]['camera_available']))
+
+    @property
+    def stream_available(self):
+        return self.camera_available and bool(ROBOT_FACTS[self.robot].get('stream_available'))
+
+    @property
+    def wrist_camera_inspection_available(self):
+        facts = ROBOT_FACTS[self.robot]
+        return (self.camera_available and self.motion_available
+                and bool(facts.get('wrist_camera_inspection_available')))
 
     @property
     def motion_available(self):
@@ -80,7 +93,8 @@ class Setup:
 
     def context(self):
         """Template variables: facts only, named for readability in the sources."""
-        robot = {**ROBOT_FACTS[self.robot], 'motion_available': self.motion_available}
+        robot = {**ROBOT_FACTS[self.robot], 'camera_available': self.camera_available,
+                 'motion_available': self.motion_available}
         return {
             'agent_cli': self.cli,
             'task': self.task,

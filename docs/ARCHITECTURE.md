@@ -8,8 +8,8 @@ selected agent harness (Claude Code or DeepSeek Harness)
     -> generated agent workspace
     -> MCP frontend
     -> registered RAX backend
-    -> Piper SDK
-    -> dual Piper hardware
+    -> Piper SDK / pyrealsense2
+    -> dual Piper hardware / configured RealSense cameras
 ```
 
 Only `services/piper/` may import `piper_sdk`. Task packages call the stable RAX
@@ -26,7 +26,10 @@ vendor session homes remain outside the agent workspace.
 
 The Piper backend is read-only by default. It connects to the configured CAN
 interfaces, reports measured dual-arm state, checks feedback freshness, and dry-runs
-joint targets against joint limits and a per-call step cap.
+joint targets against joint limits and a per-call step cap. Optional `rgb-only` and
+`rgbd` profiles add serial-bound RealSense observations without changing the motion
+gate. Camera ownership and lifecycle live in `services/piper/camera.py`; MCP framing
+and observation receipts live in `services/piper/backend.py`.
 
 Operator configuration can add one mutating tool, `piper_move_joint`. Admission is in
 `services/piper/agent_motion.py`; SDK translation and the hold latch remain in

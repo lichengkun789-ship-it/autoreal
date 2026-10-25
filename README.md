@@ -6,17 +6,18 @@ independent. The repository is intended to support multiple manipulation tasks; 
 task is built into the Piper driver.
 
 The default milestone is intentionally **read-only**. RAX can connect to both Piper
-CAN interfaces, inspect measured state, reject stale or faulted feedback, and dry-run
-absolute joint targets. An operator may opt a session into the evidence-bound
-`piper_move_joint` tool after a matching minimum-motion characterization. Gripper,
-homing, enable, reset, and general trajectory control remain unavailable.
+CAN interfaces, inspect measured state, reject stale or faulted feedback, dry-run
+absolute joint targets, and optionally capture configured RealSense RGB or RGB-D
+observations. An operator may opt a session into the evidence-bound `piper_move_joint`
+tool after a matching minimum-motion characterization. Gripper, homing, enable, reset,
+Cartesian motion, and general trajectory control remain unavailable.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
 | `services/controller/` | Robot-neutral MCP dispatch, sessions, budgets, and audit logs |
-| `services/piper/` | Piper SDK adapter, state normalization, and joint-target validation |
+| `services/piper/` | Piper SDK adapter, RealSense capture, state normalization, and safety validation |
 | `harness/` | Agent selection plus isolated Claude Code and DeepSeek Harness adapters |
 | `agent_skills/` | Capability-specific instructions installed into an agent workspace |
 | `auto_research_agent/` | Generated workspace template and stable Python runtime API |
@@ -30,9 +31,10 @@ belong in Git. Store them below `RAX_ARTIFACT_ROOT`.
 
 ## Upstream model
 
-`origin` is the AutoRAX fork and `upstream` is the official RAX repository. Development
-uses branch `real/piper`, based on RAX `real/franka` as the real-robot harness reference.
-Franka-specific drivers are not retained. See [docs/UPSTREAM.md](docs/UPSTREAM.md).
+`origin` is the independently owned `autoreal` repository and `rax-upstream` tracks
+the official RAX repository. Development uses `main`; RAX `real/franka` is retained as
+the real-robot architecture reference, but Franka-specific drivers are not retained.
+See [docs/UPSTREAM.md](docs/UPSTREAM.md).
 
 ## Development setup
 
@@ -99,6 +101,29 @@ bash scripts/start_agent.sh --config /path/to/operator-input.json
 With the example's default `agent_motion.enabled: false`, `piper_status`,
 `piper_observe`, and `piper_check_joints` are the only Piper tools.
 `piper_check_joints` is a dry run: an accepted result never means a command was sent.
+
+### Optional RealSense observation
+
+Use `examples/piper_rgbd.json` as the shape of a private backend-options file and
+replace every placeholder serial number. Camera order is bound by serial number rather
+than USB enumeration order. Then select the profile when creating a session:
+
+```bash
+.venv/bin/python scripts/list_piper_cameras.py
+
+python scripts/configure_session.py \
+  --task scene_observation \
+  --task-text "Observe the workspace without moving either arm." \
+  --backend-options /absolute/path/to/private-piper-rgbd.json \
+  --observation-profile rgbd
+```
+
+`rgb-only` records RGB without depth; `state-only` never opens a camera. Each
+`piper_observe` call writes full frames and `meta.json` below the session's
+`agent-workspace/runtime/frames/` directory. The current implementation has camera
+intrinsics but no camera-to-robot extrinsics or pixel-to-base conversion, so visual
+inspection is available while vision-guided Cartesian motion is not. See
+[docs/PIPER_CAMERAS.md](docs/PIPER_CAMERAS.md).
 
 Before starting an agent session, run the operator-side read-only probe. It checks the
 Linux interfaces, captures several fresh snapshots, confirms that the backend exposes
