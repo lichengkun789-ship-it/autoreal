@@ -4,7 +4,8 @@ Every step is completed with a person at the physical emergency stop. Do not ena
 motion merely because a unit test passes.
 
 1. Pin the Piper SDK version to the robot firmware and record both versions.
-2. Verify each configured CAN interface exists, is up, and receives fresh feedback.
+2. Run `python scripts/probe_piper_readonly.py --backend-options FILE`; require a
+   `passed` receipt and confirm `motion_commands_sent` is `false`.
 3. Start a read-only mock session and run the full automated test suite.
 4. Start a read-only Piper session and compare reported joints with the physical pose.
 5. Characterize an operator-invoked hold/stop path before exposing any motion tool.

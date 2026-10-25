@@ -52,16 +52,22 @@ class PiperSdkReader:
 
         self.clock = clock
         self.interfaces = {}
-        for side, spec in arms.items():
-            unknown = set(spec) - {"can_name"}
-            if unknown:
-                raise ValueError(f"unknown {side} arm options: {sorted(unknown)}")
-            can_name = spec.get("can_name")
-            if not isinstance(can_name, str) or not can_name:
-                raise ValueError(f"{side}.can_name must be a non-empty string")
-            interface = interface_factory(can_name)
-            interface.ConnectPort()
-            self.interfaces[side] = interface
+        try:
+            for side, spec in arms.items():
+                unknown = set(spec) - {"can_name"}
+                if unknown:
+                    raise ValueError(f"unknown {side} arm options: {sorted(unknown)}")
+                can_name = spec.get("can_name")
+                if not isinstance(can_name, str) or not can_name:
+                    raise ValueError(f"{side}.can_name must be a non-empty string")
+                interface = interface_factory(can_name)
+                # Piper SDK defaults to PiperInit(), which transmits firmware and motor
+                # parameter queries. Bring-up observation is deliberately passive.
+                interface.ConnectPort(piper_init=False)
+                self.interfaces[side] = interface
+        except BaseException:
+            self.close()
+            raise
 
     def snapshot(self) -> dict:
         measured_at = self.clock()

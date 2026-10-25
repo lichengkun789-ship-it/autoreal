@@ -76,6 +76,14 @@ bash scripts/start_agent.sh --config /path/to/operator-input.json
 `piper_status`, `piper_observe`, and `piper_check_joints` are the only Piper tools.
 `piper_check_joints` is a dry run: an accepted result never means a command was sent.
 
+Before starting an agent session, run the operator-side read-only probe. It checks the
+Linux interfaces, captures several fresh snapshots, confirms that the backend exposes
+no mutating tools, and saves a JSON receipt below the artifact root:
+
+```bash
+python scripts/probe_piper_readonly.py --backend-options "$RAX_BACKEND_OPTIONS"
+```
+
 ## Adding tasks
 
 Copy `tasks/_template/` to `tasks/<task_id>/`. Keep robot-independent success criteria

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.piper.backend import PiperBackend
+from services.piper.probe import inspect_can_interface, run_readonly_probe
 from services.piper.sdk_reader import PiperSdkReader
 
 
@@ -125,8 +126,9 @@ def test_sdk_reader_converts_units_and_disconnects_both_arms():
             self.disconnected = False
             interfaces.append(self)
 
-        def ConnectPort(self):
+        def ConnectPort(self, *, piper_init=True):
             self.connected = True
+            self.piper_init = piper_init
 
         def DisconnectPort(self):
             self.disconnected = True
@@ -160,7 +162,95 @@ def test_sdk_reader_converts_units_and_disconnects_both_arms():
     )
     snapshot = reader.snapshot()
     assert all(interface.connected for interface in interfaces)
+    assert all(interface.piper_init is False for interface in interfaces)
     assert snapshot["arms"]["left"]["joints_rad"][0] == pytest.approx(math.radians(1))
     assert snapshot["arms"]["right"]["gripper_width_m"] == pytest.approx(0.04)
     reader.close()
     assert all(interface.disconnected for interface in interfaces)
+
+
+def make_link(sys_class_net, name, *, flags="0x1", rx_packets=10):
+    root = sys_class_net / name
+    (root / "statistics").mkdir(parents=True)
+    (root / "flags").write_text(flags)
+    (root / "operstate").write_text("up")
+    values = {
+        "rx_packets": rx_packets,
+        "tx_packets": 2,
+        "rx_errors": 0,
+        "tx_errors": 0,
+        "rx_dropped": 0,
+    }
+    for key, value in values.items():
+        (root / "statistics" / key).write_text(str(value))
+
+
+def test_readonly_probe_collects_ready_samples_and_has_no_mutating_tools(tmp_path):
+    sys_class_net = tmp_path / "net"
+    make_link(sys_class_net, "can_l")
+    make_link(sys_class_net, "can_r")
+    options = {
+        "arms": {
+            "left": {"can_name": "can_l"},
+            "right": {"can_name": "can_r"},
+        }
+    }
+
+    def factory(config):
+        return PiperBackend(config, reader=FakeReader())
+
+    receipt = run_readonly_probe(
+        options,
+        samples=3,
+        startup_seconds=0,
+        interval_seconds=0,
+        backend_factory=factory,
+        sys_class_net=sys_class_net,
+        sleeper=lambda _: None,
+    )
+    assert receipt["status"] == "passed"
+    assert receipt["can_queries_sent"] is False
+    assert receipt["motion_commands_sent"] is False
+    assert receipt["tool_surface"]["mutating_tools"] == []
+    assert receipt["summary"]["ready_samples"] == 3
+    assert inspect_can_interface("can_l", sys_class_net=sys_class_net)["up"] is True
+
+
+def test_readonly_probe_refuses_missing_or_duplicate_interfaces(tmp_path):
+    options = {
+        "arms": {
+            "left": {"can_name": "missing_l"},
+            "right": {"can_name": "missing_r"},
+        }
+    }
+    receipt = run_readonly_probe(options, sys_class_net=tmp_path / "net")
+    assert receipt["status"] == "failed"
+    assert len(receipt["failure_reasons"]) == 2
+
+    options["arms"]["right"]["can_name"] = "missing_l"
+    with pytest.raises(ValueError, match="different CAN interfaces"):
+        run_readonly_probe(options, sys_class_net=tmp_path / "net")
+
+
+def test_sdk_reader_disconnects_first_arm_if_second_connection_fails():
+    interfaces = []
+
+    class Interface:
+        def __init__(self, name):
+            self.name = name
+            self.disconnected = False
+            interfaces.append(self)
+
+        def ConnectPort(self, *, piper_init=True):
+            if self.name == "bad":
+                raise RuntimeError("connection failed")
+
+        def DisconnectPort(self):
+            self.disconnected = True
+
+    with pytest.raises(RuntimeError, match="connection failed"):
+        PiperSdkReader(
+            {"left": {"can_name": "good"}, "right": {"can_name": "bad"}},
+            interface_factory=Interface,
+        )
+    assert interfaces[0].disconnected is True
