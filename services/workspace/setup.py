@@ -66,7 +66,11 @@ class Setup:
         task_options = getattr(config, 'task_options', {}) or {}
         task_specific = task_tool_names(config.task, task_options=task_options)
         task_opted_in = any(
-            name in {'click_bell_approach_preview', 'click_bell_guarded_press'}
+            name in {
+                'click_bell_approach_preview',
+                'click_bell_guarded_press',
+                'click_bell_set_gripper',
+            }
             for name in task_specific
         )
         calibrated = (config.observation_profile == 'rgbd'

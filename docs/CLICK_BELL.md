@@ -103,7 +103,8 @@ The runner remains outside the Agent tool surface:
 Without `--execute`, this validates admission and writes a plan receipt. Execution is
 still refused until the press path has commissioned workspace bounds and distal-link
 clearance. Piper gripper SDK conversion and hard command bounds now live in
-`services/piper/gripper.py`; no gripper command is exposed to the Agent yet.
+`services/piper/gripper.py`. The general backend exposes no gripper command; the
+ClickBell task can opt into the separately commissioned `click_bell_set_gripper` tool.
 
 ### Gripper and effort commissioning
 
@@ -312,7 +313,8 @@ The shortest controlled path to a press primitive is:
 6. Expose the resulting press macro to the Agent only through operator arming, a task
    allowlist, one-call budget, timeout, receipt, and guaranteed retreat attempt.
 
-Until all gates pass, the ClickBell tool remains perception-only.
+These gates admit only the commissioned right-arm ClickBell path. Other poses, arms,
+objects, or task geometries remain perception/planning-only until separately tested.
 
 ### Right-arm no-contact commissioning result (2026-10-30)
 
@@ -380,7 +382,22 @@ timestamps, and measured joint/effort/speed/gripper samples under
 executor's retreat attempt, but it prevents the tool call from being accepted as a
 complete experiment.
 
-After retreat, task success remains pending. The Agent must call
+The paired `click_bell_set_gripper` tool accepts only `close` or `open`; it never
+accepts a numeric target from the model. Its width, 10 mm incremental step, effort,
+right-arm selection, feedback gates, and 0.002 rad arm-drift limit come from the passed
+close-and-restore characterization receipt. One arming lease enforces this state
+machine:
+
+1. `close` from the commissioned open width;
+2. one `click_bell_guarded_press` with confirmed reverse retreat;
+3. `open` back to the commissioned width.
+
+Opening before retreat, repeating either gripper action, switching arms, or changing
+the arming lease is rejected locally. Close and open each produce their own three-camera
+MP4/depth/telemetry recording, so a complete trial has three recording manifests:
+gripper close, press/retreat, and gripper open.
+
+After retreat and gripper opening, task success remains pending. The Agent must call
 `request_operator(kind="visual_confirmation")`; the human reply must begin with
 `success`, `failure`, or `unclear`. `click_bell_confirm_visual_result` verifies the
 durable operator request/reply pair and links the evaluation to the motion receipt and

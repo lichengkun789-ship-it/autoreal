@@ -115,6 +115,29 @@ def test_gripper_set_closes_and_holds_without_arm_commands():
     assert reader.interfaces["left"].calls == []
 
 
+def test_gripper_set_observes_samples_and_rechecks_authorization():
+    reader = Reader()
+    samples = []
+    authorizations = []
+    result = PiperGripperSetRunner(
+        reader,
+        GripperCycleSettings(step_m=0.02, effort=500),
+        sleeper=lambda _: None,
+        sample_observer=lambda arm_name, state: samples.append(
+            (arm_name, state["gripper_width_m"])
+        ),
+    ).run(
+        arm="right",
+        target_m=0.0,
+        execute=True,
+        authorization_guard=lambda: authorizations.append(True),
+    )
+
+    assert result["status"] == "passed"
+    assert samples
+    assert len(authorizations) >= len(reader.interfaces["right"].calls)
+
+
 def test_gripper_set_plan_only_sends_nothing():
     reader = Reader()
     result = PiperGripperSetRunner(reader, sleeper=lambda _: None).run(

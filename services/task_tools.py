@@ -19,11 +19,14 @@ def task_tool_names(
         options = task_options if isinstance(task_options, dict) else {}
         preview = options.get("motion") if options else None
         press = options.get("guarded_press") if options else None
+        gripper = options.get("gripper") if options else None
         if (
             isinstance(preview, dict) and preview.get("enabled") is True
         ) or (motion_enabled and not options):
             names.append("click_bell_approach_preview")
         if isinstance(press, dict) and press.get("enabled") is True:
+            if isinstance(gripper, dict) and gripper.get("enabled") is True:
+                names.append("click_bell_set_gripper")
             names.extend(
                 ["click_bell_guarded_press", "click_bell_confirm_visual_result"]
             )

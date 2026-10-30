@@ -38,9 +38,10 @@ def _parse_reply(text: str) -> tuple[str, bool | None]:
 
 
 class ClickBellOutcomeController:
-    def __init__(self, root: Path, press_controller):
+    def __init__(self, root: Path, press_controller, *, gripper_controller=None):
         self.root = Path(root)
         self.press_controller = press_controller
+        self.gripper_controller = gripper_controller
         self.last_result = None
 
     def _validated(self, press_id: str, request_id: str):
@@ -53,19 +54,22 @@ class ClickBellOutcomeController:
             raise ValueError("latest guarded press has no confirmed retreat")
         if self.last_result is not None and self.last_result.get("press_id") == press_id:
             raise PermissionError("this guarded press already has a visual confirmation")
+        gripper = None
+        if self.gripper_controller is not None:
+            gripper = self.gripper_controller.completed_task_evidence(press_id)
         answered = operator.answered_reply(
             self.root, request_id, kind="visual_confirmation"
         )
         if answered["answer"].get("done") is not True:
             raise ValueError("operator visual confirmation is not marked done")
         outcome, visual_success = _parse_reply(answered["answer"].get("reply", ""))
-        return motion, answered, outcome, visual_success
+        return motion, gripper, answered, outcome, visual_success
 
     def validate_request(self, press_id: str, request_id: str) -> None:
         self._validated(press_id, request_id)
 
     def confirm(self, press_id: str, request_id: str) -> dict:
-        motion, answered, outcome, visual_success = self._validated(
+        motion, gripper, answered, outcome, visual_success = self._validated(
             press_id, request_id
         )
         reply = answered["answer"]["reply"]
@@ -81,6 +85,12 @@ class ClickBellOutcomeController:
             "press_id": press_id,
             "motion_receipt": motion["receipt"],
             "recording": motion["recording"],
+            "gripper": gripper,
+            "task_recordings": [
+                *([] if gripper is None else gripper["recordings"][:1]),
+                motion["recording"],
+                *([] if gripper is None else gripper["recordings"][1:]),
+            ],
             "operator_request_id": request_id,
             "operator_reply": reply,
             "operator": answered["answer"].get("by"),

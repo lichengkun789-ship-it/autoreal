@@ -230,6 +230,7 @@ def test_agent_executes_guarded_press_retreat_and_requires_visual_result(tmp_pat
     assert result["retreat_status"] == "passed"
     assert result["visual_confirmation_status"] == "pending"
     assert result["recording"]["robot_samples"] > 0
+    assert controller.last_motion["authorization"]["lease_since"] == arming.read(root)["since"]
     assert Path(result["receipt"]).is_file()
     with pytest.raises(PermissionError, match="budget is exhausted"):
         controller.validate_request()
@@ -349,6 +350,22 @@ def test_task_contract_lists_only_enabled_click_bell_motion_tools():
     )
     assert names == (
         "click_bell_localize_press_cap",
+        "click_bell_guarded_press",
+        "click_bell_confirm_visual_result",
+    )
+
+
+def test_task_contract_lists_agent_gripper_before_press_when_enabled():
+    names = task_tool_names(
+        "click_bell",
+        task_options={
+            "guarded_press": {"enabled": True},
+            "gripper": {"enabled": True},
+        },
+    )
+    assert names == (
+        "click_bell_localize_press_cap",
+        "click_bell_set_gripper",
         "click_bell_guarded_press",
         "click_bell_confirm_visual_result",
     )

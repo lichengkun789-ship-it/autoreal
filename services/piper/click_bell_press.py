@@ -419,6 +419,7 @@ class ClickBellPressController:
             "press_id": press_id,
             "status": receipt.get("status"),
             "arm": self.settings.arm,
+            "authorization": receipt["authorization"],
             "receipt": str(path),
             "retreat_status": receipt.get("retreat", {}).get("status"),
             "recording": recording.get("manifest"),

@@ -11,10 +11,11 @@ absolute joint targets, and optionally capture configured RealSense RGB or RGB-D
 observations. An operator may opt a session into the evidence-bound `piper_move_joint`
 tool after a matching minimum-motion characterization. Task packages may additionally
 expose an operator-commissioned primitive without enabling generic joint control. The
-ClickBell package currently provides a fixed no-contact preview and a fixed guarded
-press with reverse retreat, three-camera recording, robot telemetry, and mandatory
-human visual result confirmation. Homing, enable, reset, and general Cartesian or
-trajectory control remain unavailable to the Agent.
+ClickBell package currently provides a fixed no-contact preview, an evidence-bound
+right-gripper close/open tool, and a fixed guarded press with reverse retreat. Each
+task phase records three-camera video and robot telemetry, and task success requires
+human visual confirmation. Homing, enable, reset, and general Cartesian or trajectory
+control remain unavailable to the Agent.
 
 ## Repository layout
 
@@ -214,9 +215,11 @@ expand the backend into general manipulation control.
 
 ClickBell follows the same boundary at task scope. `click_bell_guarded_press` can only
 replay the exact operator-commissioned plan and settings, once per arming lease. It
-records MP4 video from every configured camera, aligned depth frames, before/after
-stills, and joint/effort/speed telemetry under the external session root. After retreat,
-`click_bell_confirm_visual_result` accepts only a durable reply from
+is paired with `click_bell_set_gripper`, which admits only the commissioned
+`close -> press/retreat -> open` sequence. The three physical phases record MP4 video
+from every configured camera, aligned depth frames, before/after stills, and
+joint/effort/speed/gripper telemetry under the external session root. After retreat
+and gripper opening, `click_bell_confirm_visual_result` accepts only a durable reply from
 `request_operator(kind="visual_confirmation")`; contact effort alone is never treated
 as task success. See [docs/CLICK_BELL.md](docs/CLICK_BELL.md).
 

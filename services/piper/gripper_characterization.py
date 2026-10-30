@@ -65,10 +65,18 @@ def incremental_targets(start_m: float, goal_m: float, step_m: float) -> list[fl
 class PiperGripperCycleRunner:
     """Close one empty gripper in small steps, then restore its initial opening."""
 
-    def __init__(self, reader, settings=None, *, sleeper=time.sleep):
+    def __init__(
+        self,
+        reader,
+        settings=None,
+        *,
+        sleeper=time.sleep,
+        sample_observer=None,
+    ):
         self.reader = reader
         self.settings = settings or GripperCycleSettings()
         self.sleeper = sleeper
+        self.sample_observer = sample_observer
         self.commander = PiperGripperCommandAdapter(reader.interfaces)
 
     def _state(self, snapshot: dict, arm: str, initial_joints: dict | None = None) -> dict:
@@ -104,12 +112,32 @@ class PiperGripperCycleRunner:
         errors = gripper.get("errors", {})
         if any(errors.values()):
             raise RuntimeError(f"{arm} gripper reports an error: {errors}")
-        return {"joints": joints, "width_m": width, "effort_nm": effort}
+        state = {"joints": joints, "width_m": width, "effort_nm": effort}
+        if self.sample_observer is not None:
+            motor = selected.get("motor", {})
+            self.sample_observer(
+                arm,
+                {
+                    "joints": joints[arm],
+                    "effort": np.asarray(motor.get("effort_nm", [0.0] * 6)),
+                    "speed": np.asarray(motor.get("speed_rad_s", [0.0] * 6)),
+                    "gripper_width_m": width,
+                },
+            )
+        return state
 
-    def _wait_for_target(self, arm: str, target_m: float, initial_joints: dict) -> dict:
+    def _wait_for_target(
+        self,
+        arm: str,
+        target_m: float,
+        initial_joints: dict,
+        authorization_guard=None,
+    ) -> dict:
         polls = max(1, math.ceil(self.settings.target_timeout_s / self.settings.poll_interval_s))
         samples = []
         for _ in range(polls):
+            if authorization_guard is not None:
+                authorization_guard()
             state = self._state(self.reader.snapshot(), arm, initial_joints)
             sample = {"width_m": state["width_m"], "effort_nm": state["effort_nm"]}
             samples.append(sample)
@@ -137,20 +165,34 @@ class PiperGripperCycleRunner:
                 ) from last_error
             self.sleeper(self.settings.poll_interval_s)
 
+    def current_state(self, arm: str) -> dict:
+        if arm not in ("left", "right"):
+            raise ValueError("arm must be left or right")
+        return self._wait_for_initial_state(arm)
+
     def _move_sequence(
-        self, arm: str, targets: list[float], initial_joints: dict, receipt: dict
+        self,
+        arm: str,
+        targets: list[float],
+        initial_joints: dict,
+        receipt: dict,
+        authorization_guard=None,
     ) -> list[dict]:
         rows = []
         for target in targets:
+            if authorization_guard is not None:
+                authorization_guard()
             receipt["gripper_command_attempted"] = True
             command = self.commander.command_opening(
                 arm, target, effort=self.settings.effort
             )
-            result = self._wait_for_target(arm, target, initial_joints)
+            result = self._wait_for_target(
+                arm, target, initial_joints, authorization_guard
+            )
             rows.append({"command": command, "feedback": result})
         return rows
 
-    def run(self, *, arm: str, execute: bool) -> dict:
+    def run(self, *, arm: str, execute: bool, authorization_guard=None) -> dict:
         receipt = {
             "schema_version": 1,
             "kind": "piper_operator_gripper_cycle",
@@ -188,10 +230,10 @@ class PiperGripperCycleRunner:
                 receipt["status"] = "planned"
                 return receipt
             receipt["close"] = self._move_sequence(
-                arm, close_targets, initial_joints, receipt
+                arm, close_targets, initial_joints, receipt, authorization_guard
             )
             receipt["restore"] = self._move_sequence(
-                arm, open_targets, initial_joints, receipt
+                arm, open_targets, initial_joints, receipt, authorization_guard
             )
             final = self._state(self.reader.snapshot(), arm, initial_joints)
             restored = abs(final["width_m"] - restore_target) <= self.settings.target_tolerance_m
@@ -208,7 +250,9 @@ class PiperGripperCycleRunner:
                     command = self.commander.command_opening(
                         arm, restore_target, effort=self.settings.effort
                     )
-                    state = self._wait_for_target(arm, restore_target, initial_joints)
+                    state = self._wait_for_target(
+                        arm, restore_target, initial_joints, authorization_guard
+                    )
                     receipt["emergency_restore"] = {"command": command, "feedback": state}
                     receipt["restored"] = True
                 except BaseException as restore_exc:
@@ -223,7 +267,14 @@ class PiperGripperCycleRunner:
 class PiperGripperSetRunner(PiperGripperCycleRunner):
     """Move one empty gripper to an operator-selected opening and keep it there."""
 
-    def run(self, *, arm: str, target_m: float, execute: bool) -> dict:
+    def run(
+        self,
+        *,
+        arm: str,
+        target_m: float,
+        execute: bool,
+        authorization_guard=None,
+    ) -> dict:
         receipt = {
             "schema_version": 1,
             "kind": "piper_operator_gripper_set",
@@ -259,7 +310,7 @@ class PiperGripperSetRunner(PiperGripperCycleRunner):
                 receipt["status"] = "planned"
                 return receipt
             receipt["commands"] = self._move_sequence(
-                arm, targets, initial_joints, receipt
+                arm, targets, initial_joints, receipt, authorization_guard
             )
             final = self._state(self.reader.snapshot(), arm, initial_joints)
             receipt["final_width_m"] = final["width_m"]
@@ -281,7 +332,9 @@ class PiperGripperSetRunner(PiperGripperCycleRunner):
                     command = self.commander.command_opening(
                         arm, initial_width, effort=self.settings.effort
                     )
-                    state = self._wait_for_target(arm, initial_width, initial_joints)
+                    state = self._wait_for_target(
+                        arm, initial_width, initial_joints, authorization_guard
+                    )
                     receipt["failure_restore"] = {"command": command, "feedback": state}
                 except BaseException as restore_exc:
                     receipt.setdefault("failure_reasons", []).append(

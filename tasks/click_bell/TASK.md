@@ -10,8 +10,11 @@ call it at most once, inspect its receipt, and do not claim that the bell was pr
 
 When the live contract includes `click_bell_guarded_press`, call it at most once. It
 replays only an operator-commissioned path, attempts the reverse retreat, and records
-all three cameras plus robot telemetry. A contact signal is not task success. After the
-arm has retreated, call `request_operator` with kind `visual_confirmation` and ask the
+all three cameras plus robot telemetry. When `click_bell_set_gripper` is also present,
+the required sequence is close, guarded press, open; each gripper action is admitted
+once and recorded, and open is rejected before retreat. A contact signal is not task
+success. After the arm has retreated and the gripper has opened, call
+`request_operator` with kind `visual_confirmation` and ask the
 operator to reply `success`, `failure`, or `unclear`. Pass the returned `request_id` and
 the press tool's `press_id` to `click_bell_confirm_visual_result`. Never infer or invent
 the operator's answer, and never repeat a press in the same arming lease.

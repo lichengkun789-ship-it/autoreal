@@ -49,8 +49,10 @@ Task-specific physical primitives follow the same ownership boundary. ClickBell'
 Agent adapter is in `tasks/click_bell/tools.py`; evidence validation and Piper command
 execution remain under `services/piper/`. `click_bell_guarded_press` replays one
 commissioned plan, then writes a motion receipt and an episode recording through
-`services/piper/episode_recording.py`. The separate confirmation tool accepts only a
-durable operator reply and evaluates it with the robot-independent task evaluator.
+`services/piper/episode_recording.py`. `click_bell_set_gripper` is separately bound to
+the passed right-gripper characterization and enforces close, press/retreat, open.
+The confirmation tool accepts only a durable operator reply and evaluates it with the
+robot-independent task evaluator.
 
 ## Franka reference mapping
 
@@ -68,7 +70,7 @@ implementations and safety assumptions their own modules.
 | Robot bridge/watchdog | `services/piper/sdk_reader.py`, `hold.py` | Feedback and restricted last-target hold implemented |
 | Operator arming | controller lease plus evidence-bound motion controllers | Implemented for characterized joint steps and commissioned ClickBell paths |
 | Cartesian servo and trajectory planning | `ik.py`, `contact_motion.py` | Read-only IK is general; execution is limited to one commissioned ClickBell path |
-| Gripper/contact/press primitive | `gripper.py`, `contact_motion.py`, `click_bell_press.py` | Operator gripper tools and one task-scoped guarded press implemented; no general Agent gripper tool |
+| Gripper/contact/press primitive | `gripper.py`, `click_bell_gripper.py`, `contact_motion.py`, `click_bell_press.py` | Task-scoped Agent close/open and guarded press implemented from separate commissioning evidence; no general Agent gripper or Cartesian tool |
 
 Franka's short-step pressing behavior depends on its impedance controller. Piper does
 not inherit that contact behavior. Every Piper press path must separately verify speed,

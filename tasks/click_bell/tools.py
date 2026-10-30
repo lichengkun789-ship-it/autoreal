@@ -6,6 +6,10 @@ from services.piper.click_bell_motion import (
     ClickBellPreviewController,
     ClickBellPreviewSettings,
 )
+from services.piper.click_bell_gripper import (
+    ClickBellGripperController,
+    ClickBellGripperSettings,
+)
 from services.piper.click_bell_press import (
     ClickBellPressController,
     ClickBellPressSettings,
@@ -50,14 +54,25 @@ class ClickBellTools:
         press_settings = ClickBellPressSettings.from_options(
             task_options.get("guarded_press"), backend_options=config.backend_options
         )
-        recording = EpisodeRecordingSettings.from_options(
-            task_options.get("recording"), required=press_settings is not None
+        gripper_settings = ClickBellGripperSettings.from_options(
+            task_options.get("gripper"), backend_options=config.backend_options
         )
-        if preview_settings is not None or press_settings is not None:
+        if gripper_settings is not None and press_settings is None:
+            raise ValueError("click_bell gripper requires guarded_press to be enabled")
+        recording = EpisodeRecordingSettings.from_options(
+            task_options.get("recording"),
+            required=press_settings is not None or gripper_settings is not None,
+        )
+        if (
+            preview_settings is not None
+            or press_settings is not None
+            or gripper_settings is not None
+        ):
             if backend is None or not hasattr(backend, "reader"):
                 raise ValueError("click_bell motion requires the Piper backend reader")
         self.preview = None
         self.press = None
+        self.gripper = None
         self.outcome = None
         mutating = set()
         if preview_settings is not None:
@@ -77,8 +92,25 @@ class ClickBellTools:
                 recording,
                 camera_timeout_ms=int(config.backend_options.get("camera_timeout_ms", 3000)),
             )
-            self.outcome = ClickBellOutcomeController(config.root, self.press)
             mutating.add("click_bell_guarded_press")
+        if gripper_settings is not None:
+            if getattr(backend, "cameras", None) is None:
+                raise ValueError("click_bell gripper recording requires live cameras")
+            self.gripper = ClickBellGripperController(
+                config.root,
+                backend.reader,
+                backend.cameras,
+                self.camera_names,
+                gripper_settings,
+                recording,
+                self.press,
+                camera_timeout_ms=int(config.backend_options.get("camera_timeout_ms", 3000)),
+            )
+            mutating.add("click_bell_set_gripper")
+        if self.press is not None:
+            self.outcome = ClickBellOutcomeController(
+                config.root, self.press, gripper_controller=self.gripper
+            )
         self.mutating = frozenset(mutating)
 
     def tools(self):
@@ -118,6 +150,22 @@ class ClickBellTools:
                         "and one-call budget are fixed. Requires a live operator arming lease."
                     ),
                     "inputSchema": _schema(),
+                }
+            )
+        if self.gripper is not None:
+            tools.append(
+                {
+                    "name": "click_bell_set_gripper",
+                    "description": (
+                        "Execute one commissioned right-gripper action for ClickBell. Only close "
+                        "then open are admitted; open is rejected until the guarded press has "
+                        "retreated. Width, step, effort, and call budgets are fixed. Each action "
+                        "records all cameras and robot telemetry."
+                    ),
+                    "inputSchema": _schema(
+                        {"action": {"type": "string", "enum": ["close", "open"]}},
+                        ("action",),
+                    ),
                 }
             )
         if self.press is not None:
@@ -180,7 +228,16 @@ class ClickBellTools:
                 raise PermissionError("click_bell guarded press is not enabled")
             if arguments:
                 raise ValueError("click_bell_guarded_press takes no arguments")
+            if self.gripper is not None:
+                self.gripper.require_closed_for_press()
             self.press.validate_request()
+            return
+        if name == "click_bell_set_gripper":
+            if self.gripper is None:
+                raise PermissionError("click_bell gripper is not enabled")
+            if set(arguments) != {"action"}:
+                raise ValueError("click_bell_set_gripper requires action")
+            self.gripper.validate_request(arguments["action"])
             return
         if name == "click_bell_confirm_visual_result":
             if self.outcome is None:
@@ -213,6 +270,8 @@ class ClickBellTools:
             return self.preview.execute(), []
         if name == "click_bell_guarded_press":
             return self.press.execute(), []
+        if name == "click_bell_set_gripper":
+            return self.gripper.execute(arguments["action"]), []
         if name == "click_bell_confirm_visual_result":
             return self.outcome.confirm(
                 arguments["press_id"], arguments["request_id"]
@@ -232,6 +291,9 @@ class ClickBellTools:
             "click_bell_guarded_press": None
             if self.press is None
             else self.press.status(),
+            "click_bell_gripper": None
+            if self.gripper is None
+            else self.gripper.status(),
             "click_bell_visual_result": None
             if self.outcome is None
             else self.outcome.status(),
