@@ -11,14 +11,19 @@ import base64
 from datetime import datetime, timezone
 import io
 import json
+import math
 from pathlib import Path
 import time
 import uuid
 
+import numpy as np
 from PIL import Image
 
 from .agent_motion import AgentMotionSettings, PiperAgentMotionController
+from .calibration import camera_models, deproject_pixel, transform_point
 from .camera import RealSenseRig, camera_specs
+from .ik import plan_pose
+from .kinematics import end_transform, pose_report
 from .safety import validate_joint_target
 from .sdk_reader import PiperSdkReader
 
@@ -26,8 +31,11 @@ from .sdk_reader import PiperSdkReader
 DEFAULTS = {
     "arms": None,
     "feedback_max_age_s": 0.25,
+    "feedback_startup_timeout_s": 2.0,
     "joint_limit_margin_rad": 0.02,
     "max_joint_step_rad": 0.05,
+    "workspace_bounds": None,
+    "link_min_z_m": None,
     "agent_motion": None,
     "agent_python": None,
     "cameras": None,
@@ -62,10 +70,16 @@ class PiperBackend:
         self.options = {**DEFAULTS, **config.backend_options}
         if float(self.options["feedback_max_age_s"]) <= 0:
             raise ValueError("feedback_max_age_s must be positive")
+        if float(self.options["feedback_startup_timeout_s"]) <= 0:
+            raise ValueError("feedback_startup_timeout_s must be positive")
         if float(self.options["joint_limit_margin_rad"]) < 0:
             raise ValueError("joint_limit_margin_rad must be non-negative")
         if float(self.options["max_joint_step_rad"]) <= 0:
             raise ValueError("max_joint_step_rad must be positive")
+        self.workspace_bounds = self._workspace_bounds(self.options["workspace_bounds"])
+        link_min_z = self.options["link_min_z_m"]
+        if link_min_z is not None and not math.isfinite(float(link_min_z)):
+            raise ValueError("link_min_z_m must be finite or null")
         for name in (
             "camera_width",
             "camera_height",
@@ -105,6 +119,7 @@ class PiperBackend:
         self.reader = reader
 
         self.camera_names: tuple[str, ...] = ()
+        self.camera_models = {}
         self.cameras = None
         self.frames_root: Path | None = None
         if self.observation_profile != "state-only":
@@ -113,6 +128,7 @@ class PiperBackend:
             if root is None:
                 raise ValueError("camera observation requires a session root")
             self.camera_names = tuple(spec.name for spec in specs)
+            self.camera_models = camera_models(specs)
             self.frames_root = Path(root) / "agent-workspace" / "runtime" / "frames"
             self.cameras = cameras or RealSenseRig(
                 specs,
@@ -197,7 +213,84 @@ class PiperBackend:
                 ),
                 "inputSchema": _schema({"arm": arm, "positions": positions}, ("arm", "positions")),
             },
+            {
+                "name": "piper_plan_pose",
+                "description": (
+                    "Solve Piper inverse kinematics and validate a straight Cartesian path "
+                    "from fresh measured joints. Returns joint waypoints and refusal reasons; "
+                    "it is a read-only plan and never authorizes or sends motion."
+                ),
+                "inputSchema": _schema(
+                    {
+                        "arm": arm,
+                        "position_m": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "description": (
+                                "Absolute target in the selected base frame, or an XYZ "
+                                "offset when relative is true."
+                            ),
+                        },
+                        "rpy_rad": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "description": (
+                                "Optional absolute XYZ roll, pitch, yaw. Omit to preserve "
+                                "the measured end-frame orientation."
+                            ),
+                        },
+                        "relative": {"type": "boolean"},
+                        "waypoints": {
+                            "type": "integer",
+                            "minimum": 2,
+                            "maximum": 64,
+                        },
+                    },
+                    ("arm", "position_m"),
+                ),
+            },
         ]
+        if self.observation_profile == "rgbd" and self.camera_models:
+            tools.append(
+                {
+                    "name": "piper_pixel_to_position",
+                    "description": (
+                        "Convert full-resolution pixels from a saved RGB-D frame to points in the "
+                        "selected arm base frame. Uses aligned depth, camera intrinsics, and "
+                        "operator-supplied camera extrinsics. Moves nothing."
+                    ),
+                    "inputSchema": _schema(
+                        {
+                            "frame_id": {"type": "string"},
+                            "camera": {
+                                "type": "string",
+                                "enum": sorted(self.camera_models),
+                            },
+                            "pixels": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 64,
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "minItems": 2,
+                                    "maxItems": 2,
+                                },
+                            },
+                            "radius": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 15,
+                            },
+                        },
+                        ("frame_id", "camera", "pixels"),
+                    ),
+                }
+            )
         if self.agent_motion is not None:
             tools.append(
                 {
@@ -254,6 +347,44 @@ class PiperBackend:
             if not isinstance(arguments["positions"], list):
                 raise ValueError("positions must be a list")
             return
+        if name == "piper_plan_pose":
+            allowed = {"arm", "position_m", "rpy_rad", "relative", "waypoints"}
+            if set(arguments) - allowed or not {"arm", "position_m"}.issubset(arguments):
+                raise ValueError("piper_plan_pose requires arm and position_m")
+            if arguments["arm"] not in {"left", "right"}:
+                raise ValueError("arm must be left or right")
+            if not isinstance(arguments["position_m"], list):
+                raise ValueError("position_m must be a list")
+            if "rpy_rad" in arguments and not isinstance(arguments["rpy_rad"], list):
+                raise ValueError("rpy_rad must be a list")
+            if "relative" in arguments and type(arguments["relative"]) is not bool:
+                raise ValueError("relative must be a boolean")
+            if "waypoints" in arguments and type(arguments["waypoints"]) is not int:
+                raise ValueError("waypoints must be an integer")
+            return
+        if name == "piper_pixel_to_position":
+            if self.observation_profile != "rgbd" or not self.camera_models:
+                raise PermissionError("calibrated Piper RGB-D localization is unavailable")
+            if set(arguments) - {"frame_id", "camera", "pixels", "radius"} or not {
+                "frame_id",
+                "camera",
+                "pixels",
+            }.issubset(arguments):
+                raise ValueError(
+                    "piper_pixel_to_position requires frame_id, camera, and pixels"
+                )
+            if arguments["camera"] not in self.camera_models:
+                raise ValueError("camera is not calibrated for Piper base-frame localization")
+            pixels = arguments["pixels"]
+            if not isinstance(pixels, list) or not 1 <= len(pixels) <= 64:
+                raise ValueError("pixels must contain 1..64 pixel pairs")
+            if any(not isinstance(pixel, list) or len(pixel) != 2 for pixel in pixels):
+                raise ValueError("each pixel must contain u and v")
+            radius = arguments.get("radius", 3)
+            if type(radius) is not int or not 0 <= radius <= 15:
+                raise ValueError("radius must be an integer from 0 to 15")
+            self._frame_dir(arguments["frame_id"])
+            return
         if name == "piper_move_joint":
             if self.agent_motion is None:
                 raise PermissionError("Piper Agent motion is disabled by operator configuration")
@@ -271,6 +402,7 @@ class PiperBackend:
         ready = True
         reasons = []
         for side, arm in snapshot["arms"].items():
+            arm["tcp_pose"] = pose_report(arm["joints_rad"])
             for source in ("joint", "status", "gripper"):
                 age = arm["feedback"][f"{source}_age_s"]
                 if age is None or age > max_age:
@@ -299,6 +431,10 @@ class PiperBackend:
                 "available": self.cameras is not None,
                 "profile": self.observation_profile,
                 "cameras": list(self.camera_names),
+                "calibrated_cameras": sorted(self.camera_models),
+                "pixel_localization_available": bool(
+                    self.observation_profile == "rgbd" and self.camera_models
+                ),
             },
             "ready": ready,
             "readiness_reasons": reasons,
@@ -316,12 +452,43 @@ class PiperBackend:
             if self.cameras is None:
                 return self._snapshot(), []
             return self._observe(arguments.get("cameras"))
+        if name == "piper_pixel_to_position":
+            return self._pixel_to_position(
+                arguments["frame_id"],
+                arguments["camera"],
+                arguments["pixels"],
+                arguments.get("radius", 3),
+            )
         if name == "piper_move_joint":
             return self.agent_motion.execute(
                 arguments["arm"], arguments["joint"], arguments["delta_rad"]
             ), []
         snapshot = self._snapshot()
         side = arguments["arm"]
+        if name == "piper_plan_pose":
+            bounds = self.workspace_bounds.get(side)
+            report = plan_pose(
+                snapshot["arms"][side]["joints_rad"],
+                arguments["position_m"],
+                rpy_rad=arguments.get("rpy_rad"),
+                relative=arguments.get("relative", False),
+                waypoints=arguments.get("waypoints", 12),
+                joint_margin_rad=float(self.options["joint_limit_margin_rad"]),
+                max_joint_step_rad=float(self.options["max_joint_step_rad"]),
+                workspace_min=None if bounds is None else bounds["min"],
+                workspace_max=None if bounds is None else bounds["max"],
+                link_min_z_m=self.options["link_min_z_m"],
+            )
+            report.update(
+                {
+                    "arm": side,
+                    "frame": f"piper_{side}_base",
+                    "state_ready": snapshot["ready"],
+                    "state_readiness_reasons": snapshot["readiness_reasons"],
+                    "planning_accepted": snapshot["ready"] and report["status"] == "passed",
+                }
+            )
+            return report, []
         report = validate_joint_target(
             snapshot["arms"][side]["joints_rad"],
             arguments["positions"],
@@ -338,6 +505,35 @@ class PiperBackend:
             "target_within_limits": target_accepted,
             **report,
         }, []
+
+    @staticmethod
+    def _workspace_bounds(value) -> dict:
+        if value is None:
+            return {}
+        if (
+            not isinstance(value, dict)
+            or not value
+            or not set(value).issubset({"left", "right"})
+        ):
+            raise ValueError("workspace_bounds must configure left, right, or both")
+        result = {}
+        for side, bounds in value.items():
+            if not isinstance(bounds, dict) or set(bounds) != {"min", "max"}:
+                raise ValueError(f"workspace_bounds.{side} requires min and max")
+            minimum = np.asarray(bounds["min"], dtype=np.float64)
+            maximum = np.asarray(bounds["max"], dtype=np.float64)
+            if (
+                minimum.shape != (3,)
+                or maximum.shape != (3,)
+                or not np.all(np.isfinite(minimum))
+                or not np.all(np.isfinite(maximum))
+                or np.any(minimum >= maximum)
+            ):
+                raise ValueError(
+                    f"workspace_bounds.{side} must contain ordered finite 3-D vectors"
+                )
+            result[side] = {"min": minimum.tolist(), "max": maximum.tolist()}
+        return result
 
     @staticmethod
     def _rgb_image(value) -> Image.Image:
@@ -367,9 +563,9 @@ class PiperBackend:
             + uuid.uuid4().hex[:6]
         )
         out_dir = self.frames_root / frame_id
-        before = self._snapshot()
+        before = self._wait_for_ready_snapshot()
         captured = self.cameras.capture(names, timeout_ms=self.options["camera_timeout_ms"])
-        after = self._snapshot()
+        after = self._wait_for_ready_snapshot()
         moved = self._max_joint_movement(before, after)
         out_dir.mkdir(parents=True, mode=0o755)
 
@@ -389,6 +585,10 @@ class PiperBackend:
             "state_before": before,
             "state_after": after,
             "cameras": {},
+        }
+        arm_end_transforms = {
+            side: end_transform(after["arms"][side]["joints_rad"])
+            for side in ("left", "right")
         }
         for name in names:
             frame = captured[name]
@@ -426,7 +626,7 @@ class PiperBackend:
                     "data": base64.b64encode(encoded.getvalue()).decode("ascii"),
                 }
             )
-            metadata["cameras"][name] = {
+            camera_metadata = {
                 "serial": frame.serial,
                 "rgb": rgb_name,
                 "depth": depth_name,
@@ -436,6 +636,14 @@ class PiperBackend:
                 "device_timestamp_ms": frame.device_timestamp_ms,
                 "intrinsics": frame.intrinsics,
             }
+            model = self.camera_models.get(name)
+            if model is not None:
+                camera_metadata["mount"] = model.mount
+                camera_metadata["base_frame"] = model.base_frame
+                camera_metadata["T_base_camera"] = model.base_from_camera(
+                    arm_end_transforms
+                ).tolist()
+            metadata["cameras"][name] = camera_metadata
             report[name] = {
                 "width": rgb.width,
                 "height": rgb.height,
@@ -454,6 +662,71 @@ class PiperBackend:
             "cameras": report,
             "max_joint_movement_during_capture_rad": moved,
         }, images
+
+    def _wait_for_ready_snapshot(self) -> dict:
+        deadline = time.monotonic() + float(self.options["feedback_startup_timeout_s"])
+        while True:
+            snapshot = self._snapshot()
+            if snapshot["ready"]:
+                return snapshot
+            if time.monotonic() >= deadline:
+                reasons = "; ".join(snapshot["readiness_reasons"])
+                raise RuntimeError(
+                    "Piper feedback did not become ready before RGB-D capture: " + reasons
+                )
+            time.sleep(0.01)
+
+    def _frame_dir(self, frame_id: str) -> Path:
+        if not isinstance(frame_id, str) or not frame_id.isalnum():
+            raise ValueError("invalid frame_id")
+        path = self.frames_root / frame_id
+        if not (path / "meta.json").is_file():
+            raise ValueError(f"unknown frame_id {frame_id}")
+        return path
+
+    def _pixel_to_position(self, frame_id, camera, pixels, radius=3):
+        directory = self._frame_dir(frame_id)
+        metadata = json.loads((directory / "meta.json").read_text())
+        entry = metadata["cameras"].get(camera)
+        if entry is None or not entry.get("depth"):
+            raise ValueError(f"frame {frame_id} has no depth for camera {camera}")
+        if "T_base_camera" not in entry:
+            raise ValueError(f"frame {frame_id} has no base-frame extrinsics for camera {camera}")
+        depth = np.asarray(Image.open(directory / entry["depth"]), dtype=np.uint16)
+        height, width = depth.shape
+        points = []
+        for u_value, v_value in pixels:
+            u, v = float(u_value), float(v_value)
+            if not np.isfinite(u) or not np.isfinite(v) or not (0 <= u < width and 0 <= v < height):
+                points.append({"pixel": [u_value, v_value], "error": "outside the image"})
+                continue
+            ui = min(width - 1, max(0, int(round(u))))
+            vi = min(height - 1, max(0, int(round(v))))
+            window = depth[
+                max(0, vi - radius) : min(height, vi + radius + 1),
+                max(0, ui - radius) : min(width, ui + radius + 1),
+            ]
+            valid = window[window > 0]
+            if valid.size == 0:
+                points.append({"pixel": [u_value, v_value], "error": "no valid depth here"})
+                continue
+            depth_m = float(np.median(valid)) / 1000.0
+            point_camera = deproject_pixel(u, v, depth_m, entry["intrinsics"])
+            point_base = transform_point(entry["T_base_camera"], point_camera)
+            points.append(
+                {
+                    "pixel": [u_value, v_value],
+                    "position_m": np.round(point_base, 5).tolist(),
+                    "depth_m": round(depth_m, 5),
+                    "valid_fraction": round(float(valid.size / window.size), 3),
+                }
+            )
+        return {
+            "frame_id": frame_id,
+            "camera": camera,
+            "frame": entry["base_frame"],
+            "points": points,
+        }, []
 
     def close(self):
         try:

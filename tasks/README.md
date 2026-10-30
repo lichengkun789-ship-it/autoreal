@@ -16,6 +16,11 @@ Robot control remains behind the RAX tools exposed by `services/<robot>/backend.
 Generated controllers and session recordings belong under the external artifact root,
 not in this source tree.
 
+A task may expose MCP adapters from `tasks/<task_id>/tools.py`. Register that toolset in
+`services/task_tools.py`; the composition layer includes it only for matching sessions.
+Task-specific hardware controllers and safety limits stay under `services/<robot>/` and
+reuse the backend's single hardware connection.
+
 `piper_agent_joint_step/` is a hardware-commissioning task rather than an object task.
 It exists to verify the complete model-to-MCP-to-backend path under one fixed,
 evidence-bound command. Its evaluator consumes private session audit records and

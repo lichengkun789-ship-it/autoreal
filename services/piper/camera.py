@@ -16,6 +16,8 @@ from typing import Any, Iterable
 class CameraSpec:
     name: str
     serial: str
+    mount: str | None = None
+    extrinsics: str | None = None
 
 
 @dataclass(frozen=True)
@@ -37,15 +39,38 @@ def camera_specs(options: Any) -> tuple[CameraSpec, ...]:
         )
     specs: list[CameraSpec] = []
     for index, value in enumerate(options):
-        if not isinstance(value, dict) or set(value) != {"name", "serial"}:
-            raise ValueError(f"cameras[{index}] requires exactly name and serial")
+        allowed = {"name", "serial", "mount", "extrinsics"}
+        if not isinstance(value, dict) or not {"name", "serial"}.issubset(value) or set(value) - allowed:
+            raise ValueError(
+                f"cameras[{index}] requires name and serial, with optional mount and extrinsics"
+            )
         name = value["name"]
         serial = value["serial"]
         if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_]+", name) is None:
             raise ValueError(f"cameras[{index}].name must contain letters, digits, or underscores")
         if not isinstance(serial, str) or not serial.strip():
             raise ValueError(f"cameras[{index}].serial must be a non-empty string")
-        specs.append(CameraSpec(name=name, serial=serial))
+        mount = value.get("mount")
+        extrinsics = value.get("extrinsics")
+        if (mount is None) != (extrinsics is None):
+            raise ValueError(
+                f"cameras[{index}].mount and extrinsics must be configured together"
+            )
+        if mount is not None and mount not in {
+            "left_base",
+            "right_base",
+            "left_tcp",
+            "right_tcp",
+        }:
+            raise ValueError(
+                f"cameras[{index}].mount must be left_base, right_base, "
+                "left_tcp, or right_tcp"
+            )
+        if extrinsics is not None and (not isinstance(extrinsics, str) or not extrinsics.strip()):
+            raise ValueError(f"cameras[{index}].extrinsics must be a non-empty path")
+        specs.append(
+            CameraSpec(name=name, serial=serial, mount=mount, extrinsics=extrinsics)
+        )
     names = [spec.name for spec in specs]
     serials = [spec.serial for spec in specs]
     if len(set(names)) != len(names):

@@ -14,3 +14,6 @@ specific language governing permissions and limitations under the License.
 
 Third-party code, simulator software, assets, model weights and datasets
 retain their respective copyright notices and license terms.
+
+Piper modified-DH geometry values correspond to AgileX Robotics piper_sdk 0.6.2,
+distributed under the MIT License: https://github.com/agilexrobotics/piper_sdk

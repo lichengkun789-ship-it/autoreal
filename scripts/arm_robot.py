@@ -41,6 +41,7 @@ def main():
             observation_profile=config.get('observation_profile', 'state-only'),
             subagents=config.get('subagents', 0),
             backend_options=config.get('backend_options') or {},
+            task_options=config.get('task_options') or {},
         ), gemini=False)
         if not setup.motion_available:
             parser.error(f"{config.get('robot')} backend exposes no motion tools in this milestone")

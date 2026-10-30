@@ -183,6 +183,10 @@ def _validate_characterization_target(
     )
     rows = deepcopy(hard_limits["joints"])
     rows[active_joint - 1] = active_margin["joints"][active_joint - 1]
+    active_row = rows[active_joint - 1]
+    if not active_row["safe_min_rad"] <= active_row["target_rad"] <= active_row["safe_max_rad"]:
+        if "outside_joint_limit_margin" not in active_row["reasons"]:
+            active_row["reasons"].append("outside_joint_limit_margin")
     violations = [row for row in rows if row["reasons"]]
     return {
         "accepted": not violations,

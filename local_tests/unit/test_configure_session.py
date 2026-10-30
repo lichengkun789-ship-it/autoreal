@@ -40,6 +40,22 @@ def test_the_mock_robot_needs_no_options(tmp_path):
     assert json.loads(Path(result.stdout.strip()).read_text())['backend_options'] == {}
 
 
+def test_task_options_are_stored_separately_from_robot_options(tmp_path):
+    task_options = tmp_path / 'task.json'
+    task_options.write_text(json.dumps({'motion': {'enabled': False}}))
+    result = configure(
+        tmp_path,
+        '--robot',
+        'mock',
+        '--task-options',
+        str(task_options),
+    )
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(Path(result.stdout.strip()).read_text())
+    assert saved['task_options'] == {'motion': {'enabled': False}}
+    assert saved['backend_options'] == {}
+
+
 def test_deepseek_harness_selects_its_provider_default(tmp_path):
     result = configure(tmp_path, '--robot', 'mock', '--agent-cli', 'dsh')
     assert result.returncode == 0, result.stderr

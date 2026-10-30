@@ -6,6 +6,9 @@ from pathlib import Path
 def describe(setup) -> str:
     if not setup.camera_available:
         geometry = 'This backend currently supplies measured robot state and no camera images.'
+    elif setup.pixel_localization_available:
+        geometry = ('RGB images, aligned depth, camera intrinsics, and operator-supplied '
+                    'base-frame extrinsics are available for pixel localization.')
     elif setup.camera_geometry:
         geometry = ('RGB images, aligned depth, and camera intrinsics are supplied. '
                     'Base-frame camera extrinsics are not yet available.')

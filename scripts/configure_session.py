@@ -28,6 +28,8 @@ def main():
     parser.add_argument('--robot', default='piper')
     parser.add_argument('--backend-options', type=Path, default=os.environ.get('RAX_BACKEND_OPTIONS') or None,
                         help='JSON file of backend settings (default: $RAX_BACKEND_OPTIONS)')
+    parser.add_argument('--task-options', type=Path,
+                        help='JSON file of operator-owned task settings')
     parser.add_argument('--observation-profile', choices=PROFILES, default='state-only')
     parser.add_argument('--agent-cli', choices=AGENT_CLIS, default='claude')
     parser.add_argument('--agent-provider', choices=PROVIDERS,
@@ -42,6 +44,7 @@ def main():
         parser.error('use --task-file or --task-text, not both')
     description = args.task_file.read_text() if args.task_file else (args.task_text or '')
     options = json.loads(args.backend_options.read_text()) if args.backend_options else {}
+    task_options = json.loads(args.task_options.read_text()) if args.task_options else {}
     if args.robot == 'piper' and not options.get('arms'):
         parser.error('a piper session needs left and right arm CAN names: pass --backend-options FILE or set '
                      'RAX_BACKEND_OPTIONS (see examples/piper.json)')
@@ -50,7 +53,7 @@ def main():
     provider = args.agent_provider or ('deepseek-api' if args.agent_cli == 'dsh' else 'claude-login')
     config = Configuration(
         root=root, task=args.task, task_description=description, robot=args.robot,
-        backend_options=options,
+        backend_options=options, task_options=task_options,
         observation_profile=args.observation_profile, agent_cli=args.agent_cli, agent_provider=provider,
         agent_effort=args.agent_effort, agent_model=args.agent_model,
         session_seconds=int(args.session_hours * 3600), max_model_calls=args.max_model_calls,

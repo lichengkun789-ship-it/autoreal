@@ -5,12 +5,16 @@ Piper robot while keeping the agent harness, hardware backend, and task definiti
 independent. The repository is intended to support multiple manipulation tasks; no
 task is built into the Piper driver.
 
-The default milestone is intentionally **read-only**. RAX can connect to both Piper
+The default backend remains intentionally **read-only**. RAX can connect to both Piper
 CAN interfaces, inspect measured state, reject stale or faulted feedback, dry-run
 absolute joint targets, and optionally capture configured RealSense RGB or RGB-D
 observations. An operator may opt a session into the evidence-bound `piper_move_joint`
-tool after a matching minimum-motion characterization. Gripper, homing, enable, reset,
-Cartesian motion, and general trajectory control remain unavailable.
+tool after a matching minimum-motion characterization. Task packages may additionally
+expose an operator-commissioned primitive without enabling generic joint control. The
+ClickBell package currently provides a fixed no-contact preview and a fixed guarded
+press with reverse retreat, three-camera recording, robot telemetry, and mandatory
+human visual result confirmation. Homing, enable, reset, and general Cartesian or
+trajectory control remain unavailable to the Agent.
 
 ## Repository layout
 
@@ -18,6 +22,7 @@ Cartesian motion, and general trajectory control remain unavailable.
 | --- | --- |
 | `services/controller/` | Robot-neutral MCP dispatch, sessions, budgets, and audit logs |
 | `services/piper/` | Piper SDK adapter, RealSense capture, state normalization, and safety validation |
+| `services/perception/` | Robot-independent camera geometry used by backends and task perception |
 | `harness/` | Agent selection plus isolated Claude Code and DeepSeek Harness adapters |
 | `agent_skills/` | Capability-specific instructions installed into an agent workspace |
 | `auto_research_agent/` | Generated workspace template and stable Python runtime API |
@@ -98,8 +103,8 @@ python scripts/configure_session.py \
 bash scripts/start_agent.sh --config /path/to/operator-input.json
 ```
 
-With the example's default `agent_motion.enabled: false`, `piper_status`,
-`piper_observe`, and `piper_check_joints` are the only Piper tools.
+With the example's default `agent_motion.enabled: false`, the base Piper tools are
+`piper_status`, `piper_observe`, and `piper_check_joints`.
 `piper_check_joints` is a dry run: an accepted result never means a command was sent.
 
 ### Optional RealSense observation
@@ -120,10 +125,13 @@ python scripts/configure_session.py \
 
 `rgb-only` records RGB without depth; `state-only` never opens a camera. Each
 `piper_observe` call writes full frames and `meta.json` below the session's
-`agent-workspace/runtime/frames/` directory. The current implementation has camera
-intrinsics but no camera-to-robot extrinsics or pixel-to-base conversion, so visual
-inspection is available while vision-guided Cartesian motion is not. See
-[docs/PIPER_CAMERAS.md](docs/PIPER_CAMERAS.md).
+`agent-workspace/runtime/frames/` directory. `examples/piper_rgbd_calibrated.json`
+shows how operator-supplied fixed or eye-in-hand extrinsics enable the read-only
+`piper_pixel_to_position` tool. Fixed-camera and hand-eye calibration, forward
+kinematics, and read-only numerical IK are implemented. Their output is planning
+evidence only; it does not authorize a new motion path. See
+[docs/PIPER_CAMERAS.md](docs/PIPER_CAMERAS.md). The first task-owned detector is
+documented in [docs/CLICK_BELL.md](docs/CLICK_BELL.md).
 
 Before starting an agent session, run the operator-side read-only probe. It checks the
 Linux interfaces, captures several fresh snapshots, confirms that the backend exposes
@@ -181,8 +189,10 @@ direction, delta, and speed to the optional Agent tool; see
 
 Copy `tasks/_template/` to `tasks/<task_id>/`. Keep robot-independent success criteria
 in `evaluator.py`, task wording in `TASK.md`, and human reset instructions in
-`RESET.md`. Task code must use the stable runtime API and must not import
-`services.piper` or `piper_sdk`.
+`RESET.md`. Perception should use robot-independent helpers under `services/perception/`.
+If a task needs a commissioned robot primitive, keep SDK commands in `services/piper/`
+and expose only a narrow adapter from `tasks/<task_id>/tools.py`; task code must never
+import `piper_sdk` directly.
 
 ## Motion gate
 
@@ -201,6 +211,14 @@ model's tool choice, and always disarms the session when the launcher exits. See
 [docs/PIPER_AGENT_MOTION.md](docs/PIPER_AGENT_MOTION.md#full-rax-agent-commissioning)
 for the operator-present workflow. This verifies Agent tool selection; it does not
 expand the backend into general manipulation control.
+
+ClickBell follows the same boundary at task scope. `click_bell_guarded_press` can only
+replay the exact operator-commissioned plan and settings, once per arming lease. It
+records MP4 video from every configured camera, aligned depth frames, before/after
+stills, and joint/effort/speed telemetry under the external session root. After retreat,
+`click_bell_confirm_visual_result` accepts only a durable reply from
+`request_operator(kind="visual_confirmation")`; contact effort alone is never treated
+as task success. See [docs/CLICK_BELL.md](docs/CLICK_BELL.md).
 
 ## License
 

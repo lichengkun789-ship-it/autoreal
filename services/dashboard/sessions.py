@@ -92,6 +92,7 @@ def motion_available(config):
             subagents=config.get('subagents', 0),
             agent_cli=config.get('agent_cli', 'claude'),
             backend_options=config.get('backend_options') or {},
+            task_options=config.get('task_options') or {},
         ), gemini=False).motion_available
     except (TypeError, ValueError):
         return False

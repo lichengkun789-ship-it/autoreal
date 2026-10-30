@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 
-KINDS = ('help', 'reset')
+KINDS = ('help', 'reset', 'visual_confirmation')
 REQUEST_ID = re.compile(r'[0-9a-f]{12}')
 
 
@@ -72,6 +72,20 @@ def pending(session_root):
             and not (folder/f"{r['id']}.reply.json").exists()]
 
 
+def answered_reply(session_root, request_id, *, kind=None):
+    """Return one durable operator answer and verify its request kind."""
+    if not REQUEST_ID.fullmatch(str(request_id)):
+        raise ValueError('invalid request id')
+    folder = directory(session_root)
+    request = _read(folder/f'{request_id}.json')
+    answer = _read(folder/f'{request_id}.reply.json')
+    if request is None or answer is None or request.get('status') != 'answered':
+        raise ValueError(f'operator request {request_id} has not been answered')
+    if kind is not None and request.get('kind') != kind:
+        raise ValueError(f'operator request {request_id} is not a {kind} request')
+    return {'request': request, 'answer': answer}
+
+
 def wait(session_root, request, timeout_s, *, poll_s=1.0, clock=time.monotonic, sleep=time.sleep):
     """Block until the operator answers; returns the tool result."""
     folder = directory(session_root)
@@ -80,9 +94,11 @@ def wait(session_root, request, timeout_s, *, poll_s=1.0, clock=time.monotonic, 
         answer = _read(folder/f"{request['id']}.reply.json")
         if answer is not None:
             _write(folder/f"{request['id']}.json", {**request, 'status': 'answered', 'answered': answer['time']})
-            return {'status': 'answered', 'reply': answer['reply'], 'done': answer['done'],
+            return {'status': 'answered', 'request_id': request['id'],
+                    'reply': answer['reply'], 'done': answer['done'],
                     'waited_s': round(clock() - started, 1)}
         sleep(poll_s)
     _write(folder/f"{request['id']}.json", {**request, 'status': 'expired'})
-    return {'status': 'timeout', 'reply': None, 'waited_s': round(clock() - started, 1),
+    return {'status': 'timeout', 'request_id': request['id'],
+            'reply': None, 'waited_s': round(clock() - started, 1),
             'note': 'No operator answer in time. Continue on your own or ask again later.'}

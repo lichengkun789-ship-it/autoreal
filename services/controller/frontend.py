@@ -40,12 +40,15 @@ def tool(name, description, properties=None, required=()):
 STATUS = tool('status', 'Session task, wall-clock and Gemini budgets, the live robot summary, and whether '
               'an earlier motion failure left control uncertain.')
 OPERATOR = tool('request_operator',
-    'Ask the human operator for help or for a scene reset, and wait for the answer. kind "reset": the '
+    'Ask the human operator for help, a scene reset, or visual task confirmation, and wait for the '
+    'answer. kind "reset": the '
     'operator rearranges the scene (e.g. after a cube fell off the table or to start a new attempt) and '
     'replies when done; "help": a question or a problem you cannot solve through the tools (stuck '
-    'object, unclear task, robot fault). Say exactly what you need. The robot does nothing while you wait; '
+    'object, unclear task, robot fault); "visual_confirmation": after an admitted task motion, ask the '
+    'operator to reply success, failure, or unclear. Say exactly what you need. The robot does nothing '
+    'while you wait; '
     'observe again after the answer, because the scene may have changed.',
-    {'kind': {'type': 'string', 'enum': ['help', 'reset']},
+    {'kind': {'type': 'string', 'enum': ['help', 'reset', 'visual_confirmation']},
      'message': {'type': 'string', 'maxLength': 4000},
      'timeout_s': {'type': 'number', 'minimum': 30, 'maximum': 3600,
                    'description': 'How long to wait for the answer (default 900).'}},

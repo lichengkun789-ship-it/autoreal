@@ -13,6 +13,7 @@ import time
 
 MILLI_DEGREES_TO_RADIANS = math.pi / 180_000.0
 MICROMETRES_TO_METRES = 1e-6
+MILLI_UNITS_TO_UNITS = 1e-3
 
 
 def _integer(value) -> int:
@@ -33,6 +34,21 @@ def _status_flags(status) -> dict[str, bool]:
             getattr(errors, f"communication_status_joint_{index}", False)
         )
     return result
+
+
+def _gripper_flags(gripper) -> dict[str, bool]:
+    status = getattr(gripper, "foc_status", None)
+    return {
+        name: bool(getattr(status, name, False))
+        for name in (
+            "voltage_too_low",
+            "motor_overheating",
+            "driver_overcurrent",
+            "driver_overheating",
+            "sensor_status",
+            "driver_error_status",
+        )
+    }
 
 
 class PiperSdkReader:
@@ -84,12 +100,15 @@ class PiperSdkReader:
         joints_message = interface.GetArmJointMsgs()
         status_message = interface.GetArmStatus()
         gripper_message = interface.GetArmGripperMsgs()
+        motor_message = interface.GetArmHighSpdInfoMsgs()
         joint_state = joints_message.joint_state
         status = status_message.arm_status
         gripper = gripper_message.gripper_state
         joint_time = float(getattr(joints_message, "time_stamp", 0.0) or 0.0)
         status_time = float(getattr(status_message, "time_stamp", 0.0) or 0.0)
         gripper_time = float(getattr(gripper_message, "time_stamp", 0.0) or 0.0)
+        motor_time = float(getattr(motor_message, "time_stamp", 0.0) or 0.0)
+        motors = [getattr(motor_message, f"motor_{index}") for index in range(1, 7)]
         return {
             "joints_rad": [
                 float(getattr(joint_state, f"joint_{index}")) * MILLI_DEGREES_TO_RADIANS
@@ -97,6 +116,27 @@ class PiperSdkReader:
             ],
             "gripper_width_m": float(getattr(gripper, "grippers_angle", 0))
             * MICROMETRES_TO_METRES,
+            "gripper": {
+                "width_m": float(getattr(gripper, "grippers_angle", 0))
+                * MICROMETRES_TO_METRES,
+                "effort_nm": float(getattr(gripper, "grippers_effort", 0))
+                * MILLI_UNITS_TO_UNITS,
+                "errors": _gripper_flags(gripper),
+            },
+            "motor": {
+                "speed_rad_s": [
+                    float(getattr(motor, "motor_speed", 0)) * MILLI_UNITS_TO_UNITS
+                    for motor in motors
+                ],
+                "current_a": [
+                    float(getattr(motor, "current", 0)) * MILLI_UNITS_TO_UNITS
+                    for motor in motors
+                ],
+                "effort_nm": [
+                    float(getattr(motor, "effort", 0)) * MILLI_UNITS_TO_UNITS
+                    for motor in motors
+                ],
+            },
             "feedback": {
                 "joint_time": joint_time,
                 "joint_age_s": None if joint_time <= 0 else max(0.0, measured_at - joint_time),
@@ -105,6 +145,9 @@ class PiperSdkReader:
                 "status_age_s": None if status_time <= 0 else max(0.0, measured_at - status_time),
                 "gripper_time": gripper_time,
                 "gripper_age_s": None if gripper_time <= 0 else max(0.0, measured_at - gripper_time),
+                "motor_time": motor_time,
+                "motor_age_s": None if motor_time <= 0 else max(0.0, measured_at - motor_time),
+                "motor_hz": float(getattr(motor_message, "Hz", 0.0) or 0.0),
             },
             "controller": {
                 "control_mode": _integer(getattr(status, "ctrl_mode", 0)),

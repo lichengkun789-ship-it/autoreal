@@ -22,6 +22,14 @@ read-only.
 - `piper_check_joints {arm, positions}` checks six absolute joint targets in radians
   against configured joint-limit margins and the per-call delta cap. `dry_run: true`
   means no command was sent.
+- `piper_plan_pose {arm, position_m, rpy_rad?, relative?, waypoints?}` solves local
+  numerical IK from fresh measured joints and checks a straight Cartesian path. It
+  returns joint waypoints, solver errors, joint-limit margins, and configured workspace
+  refusals. It is always read-only: `motion_authorized: false` is deliberate. A passed
+  plan is evidence for commissioning, not permission to replay its joint targets.
+- `piper_pixel_to_position {frame_id, camera, pixels, radius?}` may be present in a
+  calibrated RGB-D session. It converts full-resolution pixels to metric points in
+  the corresponding Piper arm base frame and never moves the robot.
 - `piper_move_joint {arm, joint, delta_rad}` may be present. It moves exactly one
   operator-allowlisted joint by a small relative step, records measured travel, and
   re-sends the accepted target as a software-only hold. It requires an operator
@@ -29,7 +37,9 @@ read-only.
 
 Readiness requires fresh joint feedback, controller `arm_status == 0`, and no reported
 joint-limit or communication errors. A failed check is evidence about the proposed
-target, not a request to clip, project, or execute it.
+target, not a request to clip, project, or execute it. A measured pose inside a
+soft-limit margin may be held or moved toward the safe interval, but never moved
+deeper into the margin.
 
 The represented SDK limits are J1 +/-150 deg, J2 0..180 deg, J3 -170..0 deg, J4
 +/-100 deg, J5 +/-70 deg, and J6 +/-120 deg. Operator configuration adds an inward

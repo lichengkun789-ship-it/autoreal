@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "task_id": "click_bell",
+  "required_capabilities": [
+    "rgbd_observation",
+    "pixel_localization",
+    "cartesian_motion",
+    "bounded_press",
+    "retreat"
+  ],
+  "evaluator": "evaluator.py:evaluate"
+}

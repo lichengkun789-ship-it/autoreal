@@ -14,6 +14,12 @@ observation without motion or cameras during hardware bring-up.
   path other than the MCP tools.
 - If a tool reports `control_uncertain`, stop moving and continue only from fresh,
   measured state.
+{% elif robot.task_motion_available %}
+- Physical motion is available only through the task-specific tool listed in
+  `MCP_SESSION.md`. Its path and budget are operator configured; do not substitute
+  generic joint commands or infer additional motion capability.
+- Call `status` immediately before motion. A refusal is a wall. If the tool reports
+  `control_uncertain`, stop and ask the operator to inspect the robot.
 {% else %}
 - Motion is not available in this backend milestone. Do not infer motion tools, write
   around the MCP boundary, or claim that a dry-run target moved hardware.
@@ -41,6 +47,12 @@ primary agent may call robot tools.
    reacquires the scene, verifies each step, and stops clearly on unknown state.
 3. Test it after operator resets and record every run in `memory/RUNS.md`. See
    [autonomous-control](.agents/skills/autonomous-control/SKILL.md).
+{% elif robot.task_motion_available %}
+1. Read `TASK.md` and [robot-interface](.agents/skills/robot-interface/SKILL.md).
+2. Call `{{ robot.status }}` and inspect the task tool's arming state and remaining
+   call budget.
+3. Use only the task-specific motion tool named in `MCP_SESSION.md`, at most as often
+   as its budget permits. Record its receipt and reacquire status after it returns.
 {% else %}
 1. Read [robot-interface](.agents/skills/robot-interface/SKILL.md).
 2. Call `{{ robot.status }}` and `{{ robot.observe }}`. Establish whether both arms
@@ -57,7 +69,7 @@ primary agent may call robot tools.
 
 Ordinary Python reaches the same tools: `from api.runtime import Context`, then
 `ctx.call(tool, **arguments)` or `ctx.value(...)` for decoded JSON. Direct calls and
-scripts share one robot service.{% if robot.motion_available %} Never run two scripts
+scripts share one robot service.{% if robot.motion_available or robot.task_motion_available %} Never run two scripts
 that move the robot at the same time.{% endif %}
 
 ## Workspace and artifacts

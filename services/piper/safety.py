@@ -41,8 +41,31 @@ def validate_joint_target(
         safe_lower, safe_upper = lower + margin_rad, upper - margin_rad
         delta = abs(requested - measured)
         reasons = []
-        if not safe_lower <= requested <= safe_upper:
+        soft_limit_state = None
+        soft_limit_action = "normal"
+        if measured < safe_lower:
+            soft_limit_state = "below_safe_min"
+            if requested < measured:
+                reasons.append("moves_deeper_into_joint_limit_margin")
+                soft_limit_action = "deeper"
+            elif requested == measured:
+                soft_limit_action = "hold"
+            else:
+                soft_limit_action = "escape"
+        elif measured > safe_upper:
+            soft_limit_state = "above_safe_max"
+            if requested > measured:
+                reasons.append("moves_deeper_into_joint_limit_margin")
+                soft_limit_action = "deeper"
+            elif requested == measured:
+                soft_limit_action = "hold"
+            else:
+                soft_limit_action = "escape"
+        elif not safe_lower <= requested <= safe_upper:
             reasons.append("outside_joint_limit_margin")
+            soft_limit_action = "enters_margin"
+        if not lower <= requested <= upper:
+            reasons.append("outside_hard_joint_limit")
         if delta > max_step_rad:
             reasons.append("per_call_step_exceeded")
         row = {
@@ -52,6 +75,10 @@ def validate_joint_target(
             "delta_rad": delta,
             "safe_min_rad": safe_lower,
             "safe_max_rad": safe_upper,
+            "hard_min_rad": lower,
+            "hard_max_rad": upper,
+            "soft_limit_state": soft_limit_state,
+            "soft_limit_action": soft_limit_action,
             "reasons": reasons,
         }
         joints.append(row)
@@ -59,6 +86,10 @@ def validate_joint_target(
             violations.append(row)
     return {
         "accepted": not violations,
+        "within_soft_limits": all(
+            row["safe_min_rad"] <= row["target_rad"] <= row["safe_max_rad"]
+            for row in joints
+        ),
         "max_delta_rad": max(row["delta_rad"] for row in joints),
         "joints": joints,
         "violations": violations,

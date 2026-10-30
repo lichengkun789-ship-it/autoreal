@@ -21,6 +21,8 @@ class Configuration:
     robot: str = 'piper'            # services.backends registry key
     # Backend-specific operator settings (bridge URLs, cameras, workspace box, ...).
     backend_options: dict = field(default_factory=dict)
+    # Task-owned operator settings. Hardware limits remain in the robot backend.
+    task_options: dict = field(default_factory=dict)
     observation_profile: str = 'state-only'
     agent_cli: str = 'claude'
     agent_provider: str = 'claude-login'
@@ -44,6 +46,8 @@ class Configuration:
             raise ValueError(f"Unknown robot; choose one of {', '.join(sorted(BACKENDS))}")
         if not isinstance(self.backend_options, dict):
             raise ValueError('backend_options must be an object')
+        if not isinstance(self.task_options, dict):
+            raise ValueError('task_options must be an object')
         if self.observation_profile not in PROFILES:
             raise ValueError(f'observation_profile must be one of {PROFILES}')
         if self.agent_cli not in AGENT_CLIS:

@@ -15,6 +15,8 @@ marks control uncertain) and ``validate(name, arguments)`` (raise before any mot
 """
 from importlib import import_module
 
+from services.task_tools import compose_task_tools
+
 # registry key -> "module:Class"; the module is imported only when selected.
 BACKENDS = {
     'mock': 'services.mock_backend:MockBackend',
@@ -32,4 +34,4 @@ def backend_class(name):
 
 def make_backend(config):
     """The configured robot's backend, constructed with the operator configuration."""
-    return backend_class(config.robot)(config)
+    return compose_task_tools(config, backend_class(config.robot)(config))

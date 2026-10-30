@@ -1,0 +1,44 @@
+{
+  "arms": {
+    "left": {
+      "can_name": "piper_left"
+    },
+    "right": {
+      "can_name": "piper_right"
+    }
+  },
+  "cameras": [
+    {
+      "name": "cam_high",
+      "serial": "SET_REAL_HIGH_CAMERA_SERIAL",
+      "mount": "right_base",
+      "extrinsics": "high_T_right_base_camera.json"
+    },
+    {
+      "name": "cam_right_wrist",
+      "serial": "SET_REAL_RIGHT_WRIST_CAMERA_SERIAL",
+      "mount": "right_tcp",
+      "extrinsics": "right_T_tcp_camera.json"
+    },
+    {
+      "name": "cam_left_wrist",
+      "serial": "SET_REAL_LEFT_WRIST_CAMERA_SERIAL",
+      "mount": "left_tcp",
+      "extrinsics": "left_T_tcp_camera.json"
+    }
+  ],
+  "camera_width": 640,
+  "camera_height": 480,
+  "camera_fps": 30,
+  "camera_warmup_frames": 15,
+  "camera_timeout_ms": 3000,
+  "agent_image_width": 640,
+  "agent_jpeg_quality": 85,
+  "feedback_max_age_s": 0.25,
+  "joint_limit_margin_rad": 0.02,
+  "max_joint_step_rad": 0.05,
+  "agent_motion": {
+    "enabled": false
+  },
+  "protected_paths": []
+}
