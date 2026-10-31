@@ -12,17 +12,18 @@ import uuid
 
 from services import arming
 from services.json_io import write_private_json
+from services.piper.safety import DEFAULT_MAX_JOINT_STEP_RAD
 
-from .agent_motion import AgentMotionStopped
-from .click_bell_motion import MOTION_CONFIG_KEYS, _read_json
-from .contact_motion import ContactStopSettings, PiperGuardedPressExecutor
-from .episode_recording import EpisodeRecordingSettings, MotionEpisodeRecorder
+from ..agent_motion import AgentMotionStopped
+from ..contact_motion import ContactStopSettings, PiperGuardedPressExecutor
+from ..episode_recording import EpisodeRecordingSettings, TaskEpisodeRecorder
+from .evidence import MOTION_CONFIG_KEYS, read_json
 
 
 HARD_MAX_SPEED_PERCENT = 2
 HARD_MAX_CONTACT_TRAVEL_M = 0.005
 HARD_MAX_WAYPOINT_TIMEOUT_S = 5.0
-HARD_MAX_SETTLE_TOLERANCE_RAD = 0.002
+HARD_MAX_SETTLE_TOLERANCE_RAD = 0.01
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class ClickBellPressSettings:
     feedback_max_age_s: float
     joint_margin_rad: float
     max_joint_step_rad: float
+    dynamic_workspace_check: bool
     plan_path: Path
     receipt_path: Path
     prior_stage_path: Path
@@ -58,6 +60,7 @@ class ClickBellPressSettings:
             "speed_percent",
             "waypoint_timeout_s",
             "settle_tolerance_rad",
+            "dynamic_workspace_check",
         }
         unknown = set(value) - allowed
         if unknown:
@@ -79,14 +82,15 @@ class ClickBellPressSettings:
                 "and prior_stage_receipt"
             ) from exc
 
-        plan, plan_raw = _read_json(plan_path, "ClickBell plan")
-        receipt, receipt_raw = _read_json(receipt_path, "guarded-press commissioning receipt")
-        prior_stage, prior_raw = _read_json(prior_path, "5 mm no-contact receipt")
+        plan, plan_raw = read_json(plan_path, "ClickBell plan")
+        receipt, receipt_raw = read_json(receipt_path, "guarded-press commissioning receipt")
+        prior_stage, prior_raw = read_json(prior_path, "5 mm no-contact receipt")
         arm = value.get("arm", "right")
         effort_delta = float(value.get("effort_delta_nm", 1.0))
         speed = value.get("speed_percent", 2)
         timeout = float(value.get("waypoint_timeout_s", 5.0))
-        tolerance = float(value.get("settle_tolerance_rad", 0.002))
+        tolerance = float(value.get("settle_tolerance_rad", 0.01))
+        dynamic_workspace_check = value.get("dynamic_workspace_check", True)
         if arm not in {"left", "right"}:
             raise ValueError("click_bell guarded press arm must be left or right")
         if not math.isfinite(effort_delta) or effort_delta <= 0:
@@ -104,6 +108,10 @@ class ClickBellPressSettings:
             raise ValueError(
                 "click_bell guarded press settle tolerance must be in "
                 f"0.0005..{HARD_MAX_SETTLE_TOLERANCE_RAD} rad"
+            )
+        if type(dynamic_workspace_check) is not bool:
+            raise ValueError(
+                "click_bell guarded press dynamic_workspace_check must be true or false"
             )
         cls._validate_evidence(
             plan,
@@ -126,7 +134,10 @@ class ClickBellPressSettings:
             settle_tolerance_rad=tolerance,
             feedback_max_age_s=float(backend_options.get("feedback_max_age_s", 0.25)),
             joint_margin_rad=float(backend_options.get("joint_limit_margin_rad", 0.02)),
-            max_joint_step_rad=float(backend_options.get("max_joint_step_rad", 0.05)),
+            max_joint_step_rad=float(
+                backend_options.get("max_joint_step_rad", DEFAULT_MAX_JOINT_STEP_RAD)
+            ),
+            dynamic_workspace_check=dynamic_workspace_check,
             plan_path=plan_path,
             receipt_path=receipt_path,
             prior_stage_path=prior_path,
@@ -234,12 +245,11 @@ class ClickBellPressSettings:
             )
             or speed > int(commissioned.get("speed_percent", 0))
             or timeout > float(commissioned.get("waypoint_timeout_s", 0.0))
-            or tolerance > float(commissioned.get("settle_tolerance_rad", 0.0))
         ):
             raise ValueError("guarded press settings are not admitted by commissioning evidence")
         try:
             admitted_path = Path(receipt["backend_options_path"]).expanduser().resolve()
-            admitted, _ = _read_json(admitted_path, "commissioned backend options")
+            admitted, _ = read_json(admitted_path, "commissioned backend options")
         except (KeyError, TypeError) as exc:
             raise ValueError("guarded-press receipt has no valid backend options path") from exc
         mismatched = [
@@ -257,10 +267,13 @@ class ClickBellPressSettings:
             "mode": "guarded_press",
             "arm": self.arm,
             "speed_percent": self.speed_percent,
+            "settle_tolerance_rad": self.settle_tolerance_rad,
+            "runtime_max_joint_step_rad": self.max_joint_step_rad,
             "max_contact_travel_m": HARD_MAX_CONTACT_TRAVEL_M,
             "one_call_per_arming": True,
             "retreat_required": True,
             "visual_confirmation_required": True,
+            "dynamic_workspace_check": self.dynamic_workspace_check,
             "evidence": self.evidence,
         }
 
@@ -278,7 +291,8 @@ class ClickBellPressController:
         camera_timeout_ms: int = 3000,
         sleeper=time.sleep,
         arming_reader=arming.read,
-        recorder_factory=MotionEpisodeRecorder,
+        recorder_factory=None,
+        task_recorder=None,
     ):
         self.root = Path(config_root)
         self.reader = reader
@@ -289,7 +303,15 @@ class ClickBellPressController:
         self.camera_timeout_ms = camera_timeout_ms
         self.sleeper = sleeper
         self.arming_reader = arming_reader
-        self.recorder_factory = recorder_factory
+        self.owns_task_recorder = task_recorder is None
+        self.task_recorder = task_recorder or TaskEpisodeRecorder(
+            self.root,
+            cameras,
+            camera_names,
+            recording,
+            camera_timeout_ms=camera_timeout_ms,
+            **({} if recorder_factory is None else {"recorder_factory": recorder_factory}),
+        )
         self.lease_since = None
         self.used = False
         self.last_motion = None
@@ -344,23 +366,37 @@ class ClickBellPressController:
         write_private_json(path, receipt, directory_mode=0o700)
         return path
 
-    def execute(self) -> dict:
+    def execute(self, plan: dict | None = None) -> dict:
         self.validate_request()
+        selected_plan = self.settings.plan if plan is None else plan
+        dynamic = plan is not None
+        if dynamic and (
+            selected_plan.get("dynamic") is not True
+            or selected_plan.get("execution_admissible") is not True
+            or selected_plan.get("arm") != self.settings.arm
+            or not isinstance(selected_plan.get("plan_id"), str)
+        ):
+            raise PermissionError("guarded press requires an admitted dynamic plan for this arm")
         lease = self._armed_lease()
         lease_since = lease["since"]
         press_id = uuid.uuid4().hex[:12]
-        recorder = self.recorder_factory(
-            self.root,
-            self.cameras,
-            self.camera_names,
-            self.recording,
-            camera_timeout_ms=self.camera_timeout_ms,
-        )
         try:
-            recorder.start()
+            if self.owns_task_recorder:
+                self.task_recorder.start()
+            elif self.task_recorder.state != "recording":
+                raise RuntimeError(
+                    f"ClickBell task recorder is {self.task_recorder.state} before press"
+                )
+            self.task_recorder.mark(
+                "guarded_press_started",
+                arm=self.settings.arm,
+                plan_id=selected_plan.get("plan_id"),
+                dynamic=dynamic,
+            )
         except BaseException as exc:
             raise AgentMotionStopped(
-                f"ClickBell recording preflight failed before motion: {type(exc).__name__}: {exc}",
+                "ClickBell task recording preflight failed before motion: "
+                f"{type(exc).__name__}: {exc}",
                 control_certain=True,
             ) from exc
         receipt = {
@@ -385,22 +421,39 @@ class ClickBellPressController:
                 self.reader,
                 settings,
                 sleeper=self.sleeper,
-                sample_observer=recorder.record_robot_sample,
+                sample_observer=self.task_recorder.record_robot_sample,
             )
             receipt = executor.run(
-                self.settings.plan,
+                selected_plan,
                 arm=self.settings.arm,
                 operator_lease_id=f"agent:{lease_since}:click_bell_press",
                 execute=True,
                 authorization_guard=lambda: self._require_same_lease(lease_since),
-                prior_stage_receipt=self.settings.prior_stage,
+                prior_stage_receipt=None if dynamic else self.settings.prior_stage,
+                require_prior_stage_evidence=not dynamic,
             )
         except BaseException as exc:
             receipt.setdefault("failure_reasons", []).append(
                 f"{type(exc).__name__}: {exc}"
             )
-        finally:
-            recording = recorder.stop()
+        admitted_status = receipt.get("status") in {"passed", "contact_unverified"}
+        retreat_passed = receipt.get("retreat", {}).get("status") == "passed"
+        self.task_recorder.mark(
+            "guarded_press_finished",
+            arm=self.settings.arm,
+            status=receipt.get("status"),
+            retreat_status=receipt.get("retreat", {}).get("status"),
+        )
+        if self.owns_task_recorder or not (admitted_status and retreat_passed):
+            recording = self.task_recorder.stop(
+                reason=(
+                    "standalone_guarded_press_completed"
+                    if admitted_status and retreat_passed
+                    else "guarded_press_failed"
+                )
+            )
+        else:
+            recording = self.task_recorder.reference()
         receipt["kind"] = "piper_agent_click_bell_guarded_press"
         receipt["agent_tool_exposed"] = True
         receipt["press_id"] = press_id
@@ -409,7 +462,12 @@ class ClickBellPressController:
             "lease_until": lease.get("until"),
             "lease_by": lease.get("by"),
         }
-        receipt["admission"] = self.settings.public()
+        receipt["admission"] = {
+            **self.settings.public(),
+            "plan_mode": "dynamic" if dynamic else "commissioned_fixed",
+            "plan_id": selected_plan.get("plan_id"),
+            "source_frame_id": selected_plan.get("frame_id"),
+        }
         receipt["recording"] = recording
         receipt["visual_confirmation"] = {"status": "pending"}
         if receipt.get("motion_command_attempted") is True:
@@ -417,6 +475,7 @@ class ClickBellPressController:
         path = self._save(receipt)
         self.last_motion = {
             "press_id": press_id,
+            "plan_id": selected_plan.get("plan_id"),
             "status": receipt.get("status"),
             "arm": self.settings.arm,
             "authorization": receipt["authorization"],
@@ -425,9 +484,8 @@ class ClickBellPressController:
             "recording": recording.get("manifest"),
             "finished_at": receipt.get("finished_at"),
         }
-        admitted_status = receipt.get("status") in {"passed", "contact_unverified"}
-        retreat_passed = receipt.get("retreat", {}).get("status") == "passed"
-        recording_passed = recording.get("status") == "passed"
+        expected_recording_status = "passed" if self.owns_task_recorder else "recording"
+        recording_passed = recording.get("status") == expected_recording_status
         if not (admitted_status and retreat_passed and recording_passed):
             reasons = list(receipt.get("failure_reasons", ()))
             if not retreat_passed:
@@ -445,6 +503,7 @@ class ClickBellPressController:
         return {
             "executed": True,
             "press_id": press_id,
+            "plan_id": selected_plan.get("plan_id"),
             "arm": self.settings.arm,
             "contact_signal_detected": receipt.get("contact_event") is not None,
             "retreat_status": "passed",

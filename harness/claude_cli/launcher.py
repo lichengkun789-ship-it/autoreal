@@ -114,19 +114,25 @@ def site_paths(config):
 
 
 def protected_paths(config):
-    return [*PROTECTED_PATHS, *site_paths(config), *(config.root/name for name in PRIVATE_FILES)]
+    from services.skill_library import library_root
+    return [*PROTECTED_PATHS, library_root(config.robot), *site_paths(config),
+            *(config.root/name for name in PRIVATE_FILES)]
 
 
 def settings(config, workspace, socket):
     """Claude Code settings: dontAsk permissions confined to the workspace, sandboxed Bash."""
     ws = f'/{workspace}'  # Permission rules spell absolute paths //like/this.
-    allow = [f'Read({ws}/**)', f'Edit({ws}/**)',  # Edit rules cover every file-editing tool.
+    allow = [f'Read({ws}/**)',
              f'Read(/{config.root}/stream/**)',  # the read-only live recording (runtime/stream)
              'Bash', 'Glob', 'Grep', 'TodoWrite', 'WebFetch', f'mcp__{MCP_SERVER}']
+    if config.agent_mode == 'research':
+        allow.append(f'Edit({ws}/**)')
     if config.subagents:
         allow.append('Agent')
     protected = protected_paths(config)
     deny = [*DENIED_TOOLS]
+    if config.agent_mode == 'execution':
+        deny.append(f'Edit({ws}/**)')
     for path in protected:
         for tool in ('Read', 'Edit'):
             deny.append(f'{tool}(/{path})')
@@ -138,7 +144,7 @@ def settings(config, workspace, socket):
         'sandbox': {
             'enabled': True, 'failIfUnavailable': True, 'autoAllowBashIfSandboxed': True,
             'allowUnsandboxedCommands': False,
-            'filesystem': {'allowWrite': [str(workspace)],
+            'filesystem': {'allowWrite': [str(workspace)] if config.agent_mode == 'research' else [],
                            'denyRead': [str(p) for p in (*protected, *HIDDEN_SOCKETS)]},
             # Internet uses the sandbox proxy; host controller endpoints stay unreachable.
             'network': {'allowAllUnixSockets': True, 'allowLocalBinding': False, 'allowedDomains': ['*']},
@@ -160,12 +166,14 @@ def settings(config, workspace, socket):
 def populate_workspace(config, workspace, *, gemini=True):
     """Template, skills, TASK.md and the contract for a new agent workspace."""
     from services.workspace import Setup, build, recipe_for
+    from services.skill_library import checkout_library
     for name in ('code', 'memory', 'output', 'runtime/frames', 'tmp'):
         (workspace/name).mkdir(parents=True, exist_ok=True)
     # The live camera/robot recording lives outside the workspace: readable, never writable.
     (config.root/'stream').mkdir(mode=0o755, exist_ok=True)
     (workspace/'runtime'/'stream').symlink_to(config.root/'stream', target_is_directory=True)
     built = build(recipe_for(), Setup.from_config(config, gemini=gemini), workspace)
+    built['skill_library'] = checkout_library(config, workspace)
     (workspace/'TASK.md').write_text(f'# Task: {config.task}\n\n{config.task_description.strip()}\n')
     (workspace/'CLAUDE.md').write_text('@AGENTS.md\n')
     (workspace/'.claude').mkdir(exist_ok=True)
@@ -286,7 +294,8 @@ def start_robot_service(config, deployed, log, *, started_at, timeout=120):
     socket = deployed['socket']
     socket.unlink(missing_ok=True)
     args = [sys.executable, '-m', 'services.controller.frontend', '--config', str(deployed['configuration']),
-            '--socket', str(socket), '--started-at', str(started_at)]
+            '--socket', str(socket), '--started-at', str(started_at),
+            '--owner-pid', str(os.getpid())]
     if relay.get('gemini_key_file'):
         args += ['--key-file', relay['gemini_key_file']]
     environment = {**os.environ, 'PYTHONPATH': str(PROJECT)}

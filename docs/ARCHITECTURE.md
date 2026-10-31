@@ -17,6 +17,12 @@ runtime API and never import a robot backend. Agent skills explain how to choose
 interpret tools; they do not implement control. Session logs, frames, generated code,
 and learned task memory live under `RAX_ARTIFACT_ROOT`.
 
+Each session declares an Agent mode. `research` provides a writable, offline coding
+sandbox; `execution` provides the same MCP tools with a read-only workspace. A
+Git-backed library at `RAX_ARTIFACT_ROOT/skill-library/<robot>/` carries verified
+executable procedures across sessions. Session work is isolated on a branch and can
+reach the persistent library only through the validating `skill_library_merge` tool.
+
 `harness/launcher.py` dispatches the operator-owned configuration to an adapter in
 `harness/claude_cli/` or `harness/deepseek_cli/`. Both adapters generate the same MCP
 contract and start the same single-owner robot frontend. Provider credentials and
@@ -33,7 +39,8 @@ and observation receipts live in `services/piper/backend.py`. Forward kinematics
 in `services/piper/kinematics.py`; `services/piper/calibration.py` loads private fixed
 or eye-in-hand extrinsics and performs read-only RGB-D point transforms.
 
-Operator configuration can add one mutating tool, `piper_move_joint`. Admission is in
+Operator configuration can independently add the characterized `piper_move_joint`
+primitive or generic plan-bound Cartesian execution. Joint-step admission is in
 `services/piper/agent_motion.py`; SDK translation and the hold latch remain in
 `services/piper/hold.py`; measured execution is shared with the operator
 characterization runner in `services/piper/minimum_motion.py`. The tool is absent from
@@ -41,18 +48,28 @@ the MCP contract unless matching characterization evidence and an explicit move
 allowlist are configured. Session arming lives outside the Agent workspace, and every
 call writes a private receipt under the session root.
 
+Cartesian admission and one-shot plan ownership live in
+`services/piper/cartesian_motion.py`; reusable measured waypoint execution, hold, and
+reverse recovery live in `services/piper/trajectory.py`. `piper_plan_pose` remains
+read-only but can stage a lease-bound plan when this capability is enabled.
+`piper_execute_plan` advances by a caller-selected number of waypoints and
+`piper_retreat_plan` reverses a caller-selected number already executed. `piper_hold`
+and the task-independent `piper_gripper` complete the Agent-facing Piper primitives.
+Contact behavior is deliberately not claimed as impedance or force control.
+
 Task definitions and generated Agent code still call only MCP. They cannot import the
 Piper SDK, widen the configured envelope, enable motors, reset faults, or bypass the
 single robot-service owner.
 
-Task-specific physical primitives follow the same ownership boundary. ClickBell's
-Agent adapter is in `tasks/click_bell/tools.py`; evidence validation and Piper command
-execution remain under `services/piper/`. `click_bell_guarded_press` replays one
-commissioned plan, then writes a motion receipt and an episode recording through
-`services/piper/episode_recording.py`. `click_bell_set_gripper` is separately bound to
-the passed right-gripper characterization and enforces close, press/retreat, open.
-The confirmation tool accepts only a durable operator reply and evaluates it with the
-robot-independent task evaluator.
+ClickBell no longer registers a Piper task adapter. Its goal, visual strategy, and
+evaluator remain under `tasks/click_bell/` and `agent_skills/task/click-bell/`; the
+Agent composes only generic Piper tools. The complete backend lifetime is recorded by
+`services/piper/episode_recording.py`, independent of task phases. Durable operator
+visual confirmation is evaluated by the task manifest after the Harness exits.
+
+Task manifests also name the evaluator and optional task Skill. Experiment runners
+evaluate semantic artifacts and task outcomes rather than requiring the Agent to
+produce one exact tool-call sequence.
 
 ## Franka reference mapping
 
@@ -64,16 +81,17 @@ implementations and safety assumptions their own modules.
 | --- | --- | --- |
 | Backend tools and receipts | `services/piper/backend.py` | State, RGB-D observation, joint dry-run, and calibrated pixel localization implemented |
 | Calibration transforms | `services/piper/calibration.py` | Loading and validation implemented; calibration collection/solving is pending |
-| Task perception and adapters | `tasks/<task_id>/`, composed by `services/task_tools.py` | ClickBell localization, guarded-press adapter, and visual result evaluation implemented |
+| Task perception and evaluation | `tasks/<task_id>/` | ClickBell localization and visual result evaluation implemented |
+| Robot-specific task adapter | `services/piper/<task_id>/`, composed by `services/task_tools.py` | Extension point retained; ClickBell needs no adapter |
 | Forward kinematics | `services/piper/kinematics.py` | Implemented against `piper_sdk==0.6.2` modified-DH geometry |
-| Inverse kinematics | `services/piper/ik.py`, exposed by `piper_plan_pose` | Read-only numerical IK and straight-path joint checks implemented; motion use is not commissioned |
+| Inverse kinematics | `services/piper/ik.py`, exposed by `piper_plan_pose` | Numerical IK and straight-path checks implemented; passed plans can be staged for configured Cartesian execution |
 | Robot bridge/watchdog | `services/piper/sdk_reader.py`, `hold.py` | Feedback and restricted last-target hold implemented |
-| Operator arming | controller lease plus evidence-bound motion controllers | Implemented for characterized joint steps and commissioned ClickBell paths |
-| Cartesian servo and trajectory planning | `ik.py`, `contact_motion.py` | Read-only IK is general; execution is limited to one commissioned ClickBell path |
-| Gripper/contact/press primitive | `gripper.py`, `click_bell_gripper.py`, `contact_motion.py`, `click_bell_press.py` | Task-scoped Agent close/open and guarded press implemented from separate commissioning evidence; no general Agent gripper or Cartesian tool |
+| Operator arming | controller lease plus evidence-bound motion controllers | Implemented for joint steps, generic Cartesian plans, and commissioned task paths |
+| Cartesian trajectory execution | `ik.py`, `cartesian_motion.py`, `trajectory.py` | General lease-bound planning, segmented execution, measured hold, failure recovery, and selectable reverse retreat implemented |
+| Gripper/contact | `gripper.py`, `gripper_motion.py`, `contact_motion.py` | General commissioned Agent gripper implemented; operator contact runner exists, but no generic impedance/force-control tool |
 
 Franka's short-step pressing behavior depends on its impedance controller. Piper does
-not inherit that contact behavior. Every Piper press path must separately verify speed,
-contact termination, workspace, retreat, timeout, and operator recovery rules before
-it can appear in the MCP contract. The current ClickBell tool is evidence-bound to one
-such path; it is not a reusable Cartesian servo.
+not inherit that behavior. The Agent may compose short generic tool-point segments and
+select a retreat depth, while the local executor owns deterministic waypoint timing,
+feedback checks, and holds. This is supervisory closed-loop exploration, not hard
+real-time force control; generic contact termination remains a capability gap.

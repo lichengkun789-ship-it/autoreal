@@ -20,7 +20,8 @@ def arguments(boundary, command):
             args += ['--ro-bind', '/dev/null', str(path)]
     for path in boundary.get('reexposed', ()):
         args += ['--ro-bind', path, path]
-    args += ['--bind', boundary['workspace'], boundary['workspace'],
+    workspace_mount = '--ro-bind' if boundary.get('workspace_read_only') else '--bind'
+    args += [workspace_mount, boundary['workspace'], boundary['workspace'],
              '--bind', boundary['socket_directory'], boundary['socket_directory']]
     for path in masked:
         args += ['--remount-ro', path]

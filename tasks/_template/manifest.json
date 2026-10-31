@@ -1,6 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task_id": "replace_me",
+  "agent_skill": null,
   "required_capabilities": [],
-  "evaluator": "evaluator.py:evaluate"
+  "evaluator": "evaluator:evaluate"
 }

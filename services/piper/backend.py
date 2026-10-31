@@ -1,8 +1,7 @@
 """RAX backend for a dual-arm Piper system.
 
-Observation and target validation are always available. A single-joint relative motion
-tool appears only when operator configuration binds it to passed characterization
-evidence and an explicit move allowlist.
+Observation and target validation are always available. Operator configuration may
+independently expose characterized single-joint motion or lease-bound Cartesian plans.
 """
 
 from __future__ import annotations
@@ -22,9 +21,15 @@ from PIL import Image
 from .agent_motion import AgentMotionSettings, PiperAgentMotionController
 from .calibration import camera_models, deproject_pixel, transform_point
 from .camera import RealSenseRig, camera_specs
+from .cartesian_motion import (
+    CartesianMotionSettings,
+    PiperCartesianMotionController,
+)
 from .ik import plan_pose
-from .kinematics import end_transform, pose_report
-from .safety import validate_joint_target
+from .kinematics import end_transform, pose_report, tool_pose_report
+from .gripper_motion import GripperMotionSettings, PiperGripperMotionController
+from .episode_recording import EpisodeRecordingSettings, SessionEpisodeRecorder
+from .safety import DEFAULT_MAX_JOINT_STEP_RAD, validate_joint_target
 from .sdk_reader import PiperSdkReader
 
 
@@ -33,10 +38,14 @@ DEFAULTS = {
     "feedback_max_age_s": 0.25,
     "feedback_startup_timeout_s": 2.0,
     "joint_limit_margin_rad": 0.02,
-    "max_joint_step_rad": 0.05,
+    "max_joint_step_rad": DEFAULT_MAX_JOINT_STEP_RAD,
     "workspace_bounds": None,
     "link_min_z_m": None,
+    "tool_offset_tcp_m": [0.0, 0.0, 0.0],
     "agent_motion": None,
+    "cartesian_motion": None,
+    "gripper_motion": None,
+    "episode_recording": None,
     "agent_python": None,
     "cameras": None,
     "camera_width": 640,
@@ -60,9 +69,18 @@ def _schema(properties=None, required=()):
 
 
 class PiperBackend:
-    """RAX backend contract backed by Piper SDK state and narrow motion admission."""
+    """RAX backend contract backed by Piper SDK state and explicit motion admission."""
 
-    def __init__(self, config, *, reader=None, cameras=None, clock=time.time):
+    def __init__(
+        self,
+        config,
+        *,
+        reader=None,
+        cameras=None,
+        cartesian_controller=None,
+        gripper_controller=None,
+        clock=time.time,
+    ):
         unknown = set(config.backend_options) - set(DEFAULTS)
         if unknown:
             raise ValueError(f"unknown piper backend options: {sorted(unknown)}")
@@ -80,6 +98,10 @@ class PiperBackend:
         link_min_z = self.options["link_min_z_m"]
         if link_min_z is not None and not math.isfinite(float(link_min_z)):
             raise ValueError("link_min_z_m must be finite or null")
+        tool_offset = np.asarray(self.options["tool_offset_tcp_m"], dtype=np.float64)
+        if tool_offset.shape != (3,) or not np.all(np.isfinite(tool_offset)):
+            raise ValueError("tool_offset_tcp_m must be a finite 3-D vector")
+        self.tool_offset_tcp_m = tool_offset.tolist()
         for name in (
             "camera_width",
             "camera_height",
@@ -104,8 +126,16 @@ class PiperBackend:
         arms = self.options["arms"]
         if not isinstance(arms, dict):
             motion_options = self.options["agent_motion"] or {}
+            cartesian_options = self.options["cartesian_motion"] or {}
+            gripper_options = self.options["gripper_motion"] or {}
             if reader is None or (
                 isinstance(motion_options, dict) and motion_options.get("enabled") is True
+            ) or (
+                isinstance(cartesian_options, dict)
+                and cartesian_options.get("enabled") is True
+            ) or (
+                isinstance(gripper_options, dict)
+                and gripper_options.get("enabled") is True
             ):
                 raise ValueError(
                     "piper backend option 'arms' is required; see examples/piper.json"
@@ -113,6 +143,17 @@ class PiperBackend:
             arms = {}
         self.motion_settings = AgentMotionSettings.from_options(
             self.options["agent_motion"], arms=arms
+        )
+        self.cartesian_settings = CartesianMotionSettings.from_options(
+            self.options["cartesian_motion"],
+            backend_options=self.options,
+            arms=arms,
+        )
+        self.gripper_settings = GripperMotionSettings.from_options(
+            self.options["gripper_motion"], backend_options=self.options
+        )
+        self.episode_recording_settings = EpisodeRecordingSettings.from_options(
+            self.options["episode_recording"]
         )
         if reader is None:
             reader = PiperSdkReader(arms, clock=clock)
@@ -142,17 +183,56 @@ class PiperBackend:
         elif cameras is not None:
             raise ValueError("injected cameras require the rgb-only or rgbd observation profile")
 
+        root = getattr(config, "root", None)
         if self.motion_settings.enabled:
-            root = getattr(config, "root", None)
             if root is None:
                 raise ValueError("enabled agent motion requires a session root")
             self.agent_motion = PiperAgentMotionController(
                 root, reader, self.motion_settings
             )
-            self.mutating = frozenset({"piper_move_joint"})
         else:
             self.agent_motion = None
-            self.mutating = frozenset()
+        if self.cartesian_settings.enabled:
+            if root is None:
+                raise ValueError("enabled Cartesian motion requires a session root")
+            self.cartesian_motion = cartesian_controller or PiperCartesianMotionController(
+                root,
+                reader,
+                self.cartesian_settings,
+            )
+        else:
+            self.cartesian_motion = None
+        if self.gripper_settings.enabled:
+            if root is None:
+                raise ValueError("enabled gripper motion requires a session root")
+            self.gripper_motion = gripper_controller or PiperGripperMotionController(
+                root, reader, self.gripper_settings
+            )
+        else:
+            self.gripper_motion = None
+        mutating = set()
+        if self.agent_motion is not None:
+            mutating.add("piper_move_joint")
+        if self.cartesian_motion is not None:
+            mutating.update({"piper_execute_plan", "piper_retreat_plan", "piper_hold"})
+        if self.gripper_motion is not None:
+            mutating.add("piper_gripper")
+        self.mutating = frozenset(mutating)
+        self.episode_recorder = None
+        if self.episode_recording_settings is not None:
+            if root is None:
+                raise ValueError("episode recording requires a session root")
+            if self.cameras is None or not self.camera_names:
+                raise ValueError("episode recording requires a camera observation profile")
+            self.episode_recorder = SessionEpisodeRecorder(
+                root,
+                self.reader,
+                self.cameras,
+                self.camera_names,
+                self.episode_recording_settings,
+                camera_timeout_ms=int(self.options["camera_timeout_ms"]),
+            )
+            self.episode_recorder.start()
 
     def tools(self):
         arm = {"type": "string", "enum": ["left", "right"]}
@@ -216,9 +296,12 @@ class PiperBackend:
             {
                 "name": "piper_plan_pose",
                 "description": (
-                    "Solve Piper inverse kinematics and validate a straight Cartesian path "
-                    "from fresh measured joints. Returns joint waypoints and refusal reasons; "
-                    "it is a read-only plan and never authorizes or sends motion."
+                    "Solve Piper inverse kinematics for the configured tool point and validate "
+                    "a straight Cartesian path "
+                    "from fresh measured joints. Returns joint waypoints and refusal reasons. "
+                    "When generic Cartesian motion is enabled and operator-armed, a passed "
+                    "plan also returns a short-lived one-shot plan_id. Planning never moves "
+                    "the robot."
                 ),
                 "inputSchema": _schema(
                     {
@@ -229,7 +312,8 @@ class PiperBackend:
                             "minItems": 3,
                             "maxItems": 3,
                             "description": (
-                                "Absolute target in the selected base frame, or an XYZ "
+                                "Absolute configured-tool-point target in the selected base "
+                                "frame, or an XYZ "
                                 "offset when relative is true."
                             ),
                         },
@@ -254,6 +338,70 @@ class PiperBackend:
                 ),
             },
         ]
+        if self.cartesian_motion is not None:
+            plan_id = {
+                "type": "string",
+                "pattern": "^[0-9a-f]{12}$",
+                "description": "One-shot identifier returned by piper_plan_pose.",
+            }
+            segment_waypoints = {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": self.cartesian_settings.max_waypoints,
+                "description": (
+                    "Optional number of path waypoints for this call. Omit to use all "
+                    "currently available waypoints. Smaller segments return control to the "
+                    "Agent for observation and replanning."
+                ),
+            }
+            tools.extend(
+                [
+                    {
+                        "name": "piper_execute_plan",
+                        "description": (
+                            "Advance through one or more waypoints of a staged Piper Cartesian "
+                            "plan, then hold and return control to the Agent. "
+                            "Requires the same live operator arming lease used for planning. "
+                            "On interruption it holds and attempts to reverse only reached "
+                            "waypoints. Returns a durable motion receipt."
+                        ),
+                        "inputSchema": _schema(
+                            {"plan_id": plan_id, "waypoints": segment_waypoints},
+                            ("plan_id",),
+                        ),
+                    },
+                    {
+                        "name": "piper_retreat_plan",
+                        "description": (
+                            "Reverse a caller-selected number of already executed waypoints and "
+                            "hold. Omit waypoints to return to the original plan start. The Agent "
+                            "may choose the retreat depth from observations and plan progress."
+                        ),
+                        "inputSchema": _schema(
+                            {"plan_id": plan_id, "waypoints": segment_waypoints},
+                            ("plan_id",),
+                        ),
+                    },
+                    {
+                        "name": "piper_hold",
+                        "description": (
+                            "Latch one Piper arm at its fresh measured joint pose and return a "
+                            "receipt. This does not continue a previous target and is available "
+                            "without operator arming."
+                        ),
+                        "inputSchema": _schema({"arm": arm}, ("arm",)),
+                    },
+                    {
+                        "name": "piper_discard_plan",
+                        "description": (
+                            "Discard an unexecuted staged Cartesian plan without moving the "
+                            "robot. Use this after a planning probe or when fresh evidence "
+                            "invalidates a plan."
+                        ),
+                        "inputSchema": _schema({"plan_id": plan_id}, ("plan_id",)),
+                    },
+                ]
+            )
         if self.observation_profile == "rgbd" and self.camera_models:
             tools.append(
                 {
@@ -311,6 +459,35 @@ class PiperBackend:
                             },
                         },
                         ("arm", "joint", "delta_rad"),
+                    ),
+                }
+            )
+        if self.gripper_motion is not None:
+            tools.append(
+                {
+                    "name": "piper_gripper",
+                    "description": (
+                        "Control one commissioned Piper gripper independently of any task. "
+                        "open and close use commissioned endpoints; move accepts an absolute "
+                        "opening in metres. Requires operator arming and returns a durable receipt."
+                    ),
+                    "inputSchema": _schema(
+                        {
+                            "arm": {
+                                "type": "string",
+                                "enum": sorted(self.gripper_settings.profiles),
+                            },
+                            "action": {
+                                "type": "string",
+                                "enum": ["open", "close", "move"],
+                            },
+                            "width_m": {
+                                "type": "number",
+                                "minimum": 0.0,
+                                "maximum": 0.10,
+                            },
+                        },
+                        ("arm", "action"),
                     ),
                 }
             )
@@ -394,6 +571,49 @@ class PiperBackend:
                 arguments["arm"], arguments["joint"], arguments["delta_rad"]
             )
             return
+        if name == "piper_gripper":
+            if self.gripper_motion is None:
+                raise PermissionError("Piper gripper motion is disabled")
+            if set(arguments) - {"arm", "action", "width_m"} or not {
+                "arm",
+                "action",
+            }.issubset(arguments):
+                raise ValueError("piper_gripper requires arm and action")
+            self.gripper_motion.validate_request(
+                arguments["arm"], arguments["action"], arguments.get("width_m")
+            )
+            return
+        if name == "piper_hold":
+            if self.cartesian_motion is None:
+                raise PermissionError("Piper Cartesian motion is disabled")
+            if set(arguments) != {"arm"} or arguments["arm"] not in {"left", "right"}:
+                raise ValueError("piper_hold requires arm=left or arm=right")
+            if arguments["arm"] not in self.cartesian_settings.allowed_arms:
+                raise PermissionError(
+                    f"Cartesian motion is not enabled for the {arguments['arm']} arm"
+                )
+            return
+        if name in {"piper_execute_plan", "piper_retreat_plan", "piper_discard_plan"}:
+            if self.cartesian_motion is None:
+                raise PermissionError("Piper Cartesian motion is disabled")
+            allowed = {"plan_id"} if name == "piper_discard_plan" else {"plan_id", "waypoints"}
+            if set(arguments) - allowed or "plan_id" not in arguments:
+                raise ValueError(f"{name} requires plan_id")
+            plan_id = arguments["plan_id"]
+            if (
+                not isinstance(plan_id, str)
+                or len(plan_id) != 12
+                or any(character not in "0123456789abcdef" for character in plan_id)
+            ):
+                raise ValueError("plan_id must contain 12 lowercase hexadecimal characters")
+            if name == "piper_discard_plan":
+                return
+            waypoint_count = arguments.get("waypoints")
+            if name == "piper_execute_plan":
+                self.cartesian_motion.validate_execute(plan_id, waypoint_count)
+            else:
+                self.cartesian_motion.validate_retreat(plan_id, waypoint_count)
+            return
         raise ValueError(f"unknown tool {name}")
 
     def _snapshot(self) -> dict:
@@ -403,6 +623,9 @@ class PiperBackend:
         reasons = []
         for side, arm in snapshot["arms"].items():
             arm["tcp_pose"] = pose_report(arm["joints_rad"])
+            arm["tool_pose"] = tool_pose_report(
+                arm["joints_rad"], self.tool_offset_tcp_m
+            )
             for source in ("joint", "status", "gripper"):
                 age = arm["feedback"][f"{source}_age_s"]
                 if age is None or age > max_age:
@@ -418,14 +641,45 @@ class PiperBackend:
             "robot": "dual_piper",
             "phase": (
                 "bounded_agent_motion"
-                if self.agent_motion is not None
+                if any(
+                    controller is not None
+                    for controller in (
+                        self.agent_motion,
+                        self.cartesian_motion,
+                        self.gripper_motion,
+                    )
+                )
                 else "read_only_bringup"
             ),
-            "motion_tools_available": self.agent_motion is not None,
+            "motion_tools_available": (
+                any(
+                    controller is not None
+                    for controller in (
+                        self.agent_motion,
+                        self.cartesian_motion,
+                        self.gripper_motion,
+                    )
+                )
+            ),
             "agent_motion": (
                 self.motion_settings.public()
                 if self.agent_motion is None
                 else self.agent_motion.status()
+            ),
+            "cartesian_motion": (
+                self.cartesian_settings.public()
+                if self.cartesian_motion is None
+                else self.cartesian_motion.status()
+            ),
+            "gripper_motion": (
+                self.gripper_settings.public()
+                if self.gripper_motion is None
+                else self.gripper_motion.status()
+            ),
+            "episode_recording": (
+                {"enabled": False}
+                if self.episode_recorder is None
+                else {"enabled": True, **self.episode_recorder.status()}
             ),
             "camera_observation": {
                 "available": self.cameras is not None,
@@ -463,10 +717,27 @@ class PiperBackend:
             return self.agent_motion.execute(
                 arguments["arm"], arguments["joint"], arguments["delta_rad"]
             ), []
+        if name == "piper_gripper":
+            return self.gripper_motion.execute(
+                arguments["arm"], arguments["action"], arguments.get("width_m")
+            ), []
+        if name == "piper_execute_plan":
+            return self.cartesian_motion.execute(
+                arguments["plan_id"], waypoint_count=arguments.get("waypoints")
+            ), []
+        if name == "piper_retreat_plan":
+            return self.cartesian_motion.retreat(
+                arguments["plan_id"], waypoint_count=arguments.get("waypoints")
+            ), []
+        if name == "piper_discard_plan":
+            return self.cartesian_motion.discard(arguments["plan_id"]), []
+        if name == "piper_hold":
+            return self.cartesian_motion.hold(arguments["arm"]), []
         snapshot = self._snapshot()
         side = arguments["arm"]
         if name == "piper_plan_pose":
-            bounds = self.workspace_bounds.get(side)
+            require_workspace = self.cartesian_settings.require_workspace_checks
+            bounds = self.workspace_bounds.get(side) if require_workspace else None
             report = plan_pose(
                 snapshot["arms"][side]["joints_rad"],
                 arguments["position_m"],
@@ -477,7 +748,10 @@ class PiperBackend:
                 max_joint_step_rad=float(self.options["max_joint_step_rad"]),
                 workspace_min=None if bounds is None else bounds["min"],
                 workspace_max=None if bounds is None else bounds["max"],
-                link_min_z_m=self.options["link_min_z_m"],
+                link_min_z_m=(
+                    self.options["link_min_z_m"] if require_workspace else None
+                ),
+                tool_offset_tcp_m=self.tool_offset_tcp_m,
             )
             report.update(
                 {
@@ -488,6 +762,12 @@ class PiperBackend:
                     "planning_accepted": snapshot["ready"] and report["status"] == "passed",
                 }
             )
+            report["execution_admissible"] = False
+            if self.cartesian_motion is not None and report["planning_accepted"]:
+                try:
+                    report.update(self.cartesian_motion.stage(report, arm=side))
+                except (PermissionError, ValueError) as exc:
+                    report["execution_reasons"] = [str(exc)]
             return report, []
         report = validate_joint_target(
             snapshot["arms"][side]["joints_rad"],
@@ -730,7 +1010,11 @@ class PiperBackend:
 
     def close(self):
         try:
-            if self.cameras is not None:
-                self.cameras.close()
+            try:
+                if self.episode_recorder is not None:
+                    self.episode_recorder.stop()
+            finally:
+                if self.cameras is not None:
+                    self.cameras.close()
         finally:
             self.reader.close()

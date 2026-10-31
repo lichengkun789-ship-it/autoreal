@@ -27,8 +27,17 @@ work in an automated observation–decision–action script that runs without yo
 current observations to adapt to new layouts, rather than blindly replaying one run's
 actions.
 
+{% if robot.cartesian_execute %}
+- Build reusable Piper motion functions around `{{ robot.cartesian_plan }}` followed by
+  `{{ robot.cartesian_execute }}`, and retain the plan ID for
+  `{{ robot.cartesian_retreat }}` when the step should return. Planning and execution
+  are separate calls; never send returned joint rows yourself. Execute a selected
+  number of waypoints, inspect progress and fresh evidence, then continue or retreat a
+  selected number. This decision loop belongs in the controller.
+{% else %}
 - Hard-code reusable motion functions and decision rules on the MCP tools
-  (`{{ robot.move }}`, `{{ robot.move_joints }}`, `{{ robot.gripper }}`) when suitable;
+  (`{{ robot.move }}`, `{{ robot.move_joints }}`, `{{ robot.gripper }}`) when suitable.
+{% endif %}
   [robot-interface](../robot-interface/SKILL.md) has the frames and limits.
 {% if gemini %}
 - Use Gemini when simple perception rules are insufficient. Write your own prompts and
@@ -81,8 +90,15 @@ steps and full runs:
 def main(ctx):
     reply = ctx.value("{{ robot.observe }}")
     # Your observation–decision–action loop, e.g.:
+{% if robot.cartesian_execute %}
+    # plan = ctx.value("{{ robot.cartesian_plan }}", arm="right",
+    #                  position_m=[x, y, z], waypoints=16)
+    # result = ctx.value("{{ robot.cartesian_execute }}",
+    #                    plan_id=plan["plan_id"], waypoints=4)
+{% else %}
     # ctx.value("{{ robot.move }}", position=[x, y, z], quaternion=q)
     # ctx.value("{{ robot.gripper }}", action="grasp", width=0.0, force=30)
+{% endif %}
     return {"ok": True}
 
 
@@ -122,8 +138,8 @@ retrying the same motion. Observations save full-resolution frames under
 There is no formal evaluation: you judge the controller by running it end to end on
 the real scene.
 
-1. Bring the robot to a neutral state (gripper open, `{{ robot.move_joints }}` preset
-   `home`), then call `request_operator` with kind `reset` and say what you need, e.g.
+1. Bring the robot to a task-defined neutral state using only tools in the live
+   contract, then call `request_operator` with kind `reset` and say what you need, e.g.
    "please put the cubes back at new positions on the table". Wait for the answer.
 2. Commit the controller version (`git` inside `code/<project>/`) and run it once,
    unattended: no direct robot calls while it runs. If it fails, read its report, log

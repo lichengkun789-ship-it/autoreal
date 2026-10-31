@@ -59,6 +59,15 @@ def test_command_sandbox_has_no_network_and_only_workspace_is_writable(tmp_path)
     assert result[result.index('--bind')+1] == boundary['workspace']
 
 
+def test_execution_command_sandbox_mounts_workspace_read_only(tmp_path):
+    boundary = {'bwrap': '/usr/bin/bwrap', 'workspace': str(tmp_path/'workspace'),
+                'socket_directory': str(tmp_path/'socket'), 'hidden': [], 'reexposed': [],
+                'workspace_read_only': True}
+    result = arguments(boundary, ['/bin/sh', '-c', 'true'])
+    index = result.index('--ro-bind', result.index('--die-with-parent') + 1)
+    assert result[index + 1:index + 3] == [boundary['workspace'], boundary['workspace']]
+
+
 def test_deploy_builds_dsh_profile_without_exposing_key(tmp_path, monkeypatch):
     binary = fake_dsh(tmp_path)
     node = tmp_path/'node24'
@@ -113,3 +122,41 @@ def test_native_events_record_resume_identity_and_dashboard_usage(tmp_path):
     usage = json.loads((tmp_path/'model-usage.jsonl').read_text())
     assert usage['input_tokens'] == 10 and usage['cache_read_input_tokens'] == 3
     assert json.loads((tmp_path/'model-calls.json').read_text())['calls'] == 1
+
+
+def test_interrupted_motion_waits_for_mcp_result_before_shutdown(tmp_path):
+    audit = tmp_path/'mcp.jsonl'
+    request = {'event': 'mcp_request', 'call_id': 'one',
+               'tool': 'piper_execute_plan'}
+    audit.write_text(json.dumps(request) + '\n')
+    sleeps = []
+
+    def finish_motion(seconds):
+        sleeps.append(seconds)
+        result = {'event': 'mcp_result', 'call_id': 'one',
+                  'tool': 'piper_execute_plan'}
+        with audit.open('a') as stream:
+            stream.write(json.dumps(result) + '\n')
+
+    result = launcher.wait_for_interrupted_motion(
+        tmp_path, timeout=1, poll=.01, sleeper=finish_motion
+    )
+
+    assert result == {'waited': True, 'status': 'motion_finished'}
+    assert sleeps == [.01]
+
+
+def test_model_call_limit_is_not_reported_as_a_clean_agent_exit():
+    assert launcher.launch_returncode(0, True) == 75
+    assert launcher.launch_returncode(1, True) == 75
+    assert launcher.launch_returncode(0, False) == 0
+
+
+def test_interrupted_motion_ignores_read_only_calls(tmp_path):
+    request = {'event': 'mcp_request', 'call_id': 'one', 'tool': 'piper_observe'}
+    (tmp_path/'mcp.jsonl').write_text(json.dumps(request) + '\n')
+
+    assert launcher.wait_for_interrupted_motion(tmp_path) == {
+        'waited': False,
+        'status': 'no_motion_in_flight',
+    }

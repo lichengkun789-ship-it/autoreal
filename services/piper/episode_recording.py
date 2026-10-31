@@ -1,4 +1,4 @@
-"""Session-owned RGB-D video and Piper telemetry recording for one motion."""
+"""Session-owned RGB-D video and Piper telemetry recording."""
 
 from __future__ import annotations
 
@@ -29,23 +29,23 @@ class EpisodeRecordingSettings:
     def from_options(cls, value, *, required: bool = False):
         value = {} if value is None else value
         if not isinstance(value, dict):
-            raise ValueError("click_bell recording options must be an object")
+            raise ValueError("episode recording options must be an object")
         unknown = set(value) - {"enabled", "fps", "save_depth"}
         if unknown:
-            raise ValueError(f"unknown click_bell recording options: {sorted(unknown)}")
+            raise ValueError(f"unknown episode recording options: {sorted(unknown)}")
         enabled = value.get("enabled", False)
         if type(enabled) is not bool:
-            raise ValueError("click_bell recording enabled must be true or false")
+            raise ValueError("episode recording enabled must be true or false")
         if required and not enabled:
-            raise ValueError("guarded ClickBell press requires recording.enabled=true")
+            raise ValueError("this operation requires recording.enabled=true")
         if not enabled:
             return None
         fps = float(value.get("fps", 5.0))
         save_depth = value.get("save_depth", True)
         if not math.isfinite(fps) or not 1.0 <= fps <= 10.0:
-            raise ValueError("click_bell recording fps must be in 1..10")
+            raise ValueError("episode recording fps must be in 1..10")
         if type(save_depth) is not bool:
-            raise ValueError("click_bell recording save_depth must be true or false")
+            raise ValueError("episode recording save_depth must be true or false")
         return cls(fps=fps, save_depth=save_depth)
 
 
@@ -204,6 +204,10 @@ class MotionEpisodeRecorder:
             with self._lock:
                 self._errors.append(f"robot sample: {type(exc).__name__}: {exc}")
 
+    def record_error(self, message: str) -> None:
+        with self._lock:
+            self._errors.append(str(message))
+
     def _release_writers(self) -> None:
         for writer in self._writers.values():
             try:
@@ -265,3 +269,182 @@ class MotionEpisodeRecorder:
         manifest_path = self.directory / "manifest.json"
         write_private_json(manifest_path, manifest, directory_mode=0o700)
         return {**manifest, "manifest": str(manifest_path), "directory": str(self.directory)}
+
+
+class TaskEpisodeRecorder:
+    """Keep one recorder alive across all physical phases of a task."""
+
+    def __init__(
+        self,
+        root: Path,
+        cameras,
+        camera_names,
+        settings: EpisodeRecordingSettings,
+        *,
+        camera_timeout_ms: int = 3000,
+        recorder_factory=MotionEpisodeRecorder,
+        clock=time.time,
+    ):
+        self.recorder = recorder_factory(
+            root,
+            cameras,
+            camera_names,
+            settings,
+            camera_timeout_ms=camera_timeout_ms,
+        )
+        self.clock = clock
+        self.state = "idle"
+        self.events: list[dict] = []
+        self.result = None
+
+    def reference(self) -> dict:
+        directory = getattr(self.recorder, "directory", None)
+        if directory is None:
+            root = getattr(self.recorder, "root", None)
+            recording_id = getattr(self.recorder, "recording_id", None)
+            if root is not None and recording_id is not None:
+                directory = Path(root) / "recordings" / str(recording_id)
+        manifest = None if directory is None else Path(directory) / "manifest.json"
+        if manifest is not None:
+            manifest = str(manifest)
+        elif self.result is not None:
+            manifest = self.result.get("manifest")
+        return {
+            "scope": "task",
+            "status": self.state,
+            "manifest": manifest,
+        }
+
+    def mark(self, event: str, **details) -> None:
+        if self.state not in {"recording", "stopping"}:
+            raise RuntimeError(f"cannot mark task recording while {self.state}")
+        self.events.append(
+            {
+                "event": event,
+                "recorded_at": float(self.clock()),
+                "details": jsonable(details),
+            }
+        )
+
+    def start(self) -> None:
+        if self.state != "idle":
+            raise RuntimeError(f"task recorder cannot start while {self.state}")
+        self.recorder.start()
+        self.state = "recording"
+        self.mark("task_recording_started")
+
+    def record_robot_sample(self, arm: str, state: dict) -> None:
+        if self.state != "recording":
+            raise RuntimeError(f"cannot record robot sample while {self.state}")
+        self.recorder.record_robot_sample(arm, state)
+
+    def record_error(self, message: str) -> None:
+        self.recorder.record_error(message)
+
+    def stop(self, *, reason: str = "task_motion_completed") -> dict:
+        if self.state == "stopped":
+            return self.result
+        if self.state != "recording":
+            raise RuntimeError(f"task recorder cannot stop while {self.state}")
+        self.mark("task_recording_stopped", reason=reason)
+        self.state = "stopping"
+        result = self.recorder.stop()
+        result.update(
+            {
+                "kind": "piper_task_episode_recording",
+                "scope": "task",
+                "events": list(self.events),
+            }
+        )
+        manifest = result.get("manifest")
+        if manifest and Path(manifest).is_file():
+            write_private_json(Path(manifest), result, directory_mode=0o700)
+        self.result = result
+        self.state = "stopped"
+        return result
+
+    def abort(self, reason: str) -> dict | None:
+        if self.state == "idle":
+            return None
+        if self.state == "stopped":
+            return self.result
+        self.mark("task_recording_aborted", reason=reason)
+        return self.stop(reason=reason)
+
+
+class SessionEpisodeRecorder:
+    """Record the complete Piper backend lifetime, including Agent deliberation."""
+
+    def __init__(
+        self,
+        root: Path,
+        reader,
+        cameras,
+        camera_names,
+        settings: EpisodeRecordingSettings,
+        *,
+        camera_timeout_ms: int = 3000,
+        recorder_factory=TaskEpisodeRecorder,
+    ):
+        self.reader = reader
+        self.settings = settings
+        self.recorder = recorder_factory(
+            root,
+            cameras,
+            camera_names,
+            settings,
+            camera_timeout_ms=camera_timeout_ms,
+        )
+        self._stop = threading.Event()
+        self._thread = None
+        self.result = None
+
+    def _sample_robot(self) -> None:
+        snapshot = self.reader.snapshot()
+        for arm, value in snapshot.get("arms", {}).items():
+            motor = value.get("motor", {})
+            self.recorder.record_robot_sample(
+                arm,
+                {
+                    "joints": value.get("joints_rad", [0.0] * 6),
+                    "effort": motor.get("effort_nm", [0.0] * 6),
+                    "speed": motor.get("speed_rad_s", [0.0] * 6),
+                    "gripper_width_m": value.get("gripper_width_m", 0.0),
+                },
+            )
+
+    def _robot_loop(self) -> None:
+        period = 1.0 / self.settings.fps
+        while not self._stop.wait(period):
+            try:
+                self._sample_robot()
+            except BaseException as exc:
+                self.recorder.record_error(
+                    f"robot recorder: {type(exc).__name__}: {exc}"
+                )
+                return
+
+    def start(self) -> None:
+        self.recorder.start()
+        self.recorder.mark("session_recording_started")
+        self._sample_robot()
+        self._thread = threading.Thread(
+            target=self._robot_loop,
+            name="piper-session-robot-recorder",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self, *, reason: str = "backend_closed") -> dict:
+        if self.result is not None:
+            return self.result
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                self.recorder.record_error("robot recorder thread did not stop")
+        self.result = self.recorder.stop(reason=reason)
+        return self.result
+
+    def status(self) -> dict:
+        return self.result or self.recorder.reference()

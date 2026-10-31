@@ -25,6 +25,7 @@ def test_piper_workspace_is_read_only_and_renders_without_markup(tmp_path):
     skills = {path.name for path in (workspace / ".agents/skills").iterdir()}
     assert "robot-interface" in skills
     assert "experience-memory" in skills
+    assert "continual-learning" in skills
     assert "manual-robot-control" not in skills
     assert "autonomous-control" not in skills
     assert "live-stream" not in skills
@@ -57,7 +58,7 @@ def test_piper_motion_workspace_advertises_only_the_bounded_motion_tool(tmp_path
     assert "autonomous-control" in skills
     autonomous = (workspace / ".agents/skills/autonomous-control/SKILL.md").read_text()
     assert "piper_move_joint" in autonomous
-    assert "not general manipulation control" in autonomous
+    assert "not general manipulation\ncontrol" in autonomous
 
 
 def test_piper_rgbd_workspace_advertises_images_without_unimplemented_camera_skills(tmp_path):
@@ -120,29 +121,136 @@ def test_setup_detects_calibrated_geometry_from_backend_config():
     assert "piper_pixel_to_position" in setup.tools
 
 
-def test_click_bell_workspace_adds_only_its_read_only_perception_tool():
+def test_setup_exposes_only_configured_cartesian_motion_tools():
+    config = SimpleNamespace(
+        robot="piper",
+        task="generic_task",
+        agent_cli="claude",
+        agent_mode="research",
+        observation_profile="state-only",
+        subagents=0,
+        backend_options={
+            "agent_motion": {"enabled": False},
+            "cartesian_motion": {"enabled": True},
+        },
+    )
+
+    setup = Setup.from_config(config)
+
+    assert setup.base_motion_tools == (
+        "piper_execute_plan",
+        "piper_retreat_plan",
+        "piper_discard_plan",
+        "piper_hold",
+    )
+    assert "piper_execute_plan" in setup.tools
+    assert "piper_retreat_plan" in setup.tools
+    assert "piper_discard_plan" in setup.tools
+    assert "piper_hold" in setup.tools
+    assert "piper_move_joint" not in setup.tools
+    assert setup.context()["robot"]["cartesian_plan"] == "piper_plan_pose"
+
+
+def test_setup_exposes_task_independent_gripper_when_configured():
+    config = SimpleNamespace(
+        robot="piper",
+        task="generic_task",
+        agent_cli="claude",
+        agent_mode="research",
+        observation_profile="state-only",
+        subagents=0,
+        backend_options={
+            "agent_motion": {"enabled": False},
+            "cartesian_motion": {"enabled": False},
+            "gripper_motion": {"enabled": True},
+        },
+    )
+
+    setup = Setup.from_config(config)
+
+    assert setup.base_motion_tools == ("piper_gripper",)
+    assert "piper_gripper" in setup.tools
+    assert setup.context()["robot"]["gripper"] == "piper_gripper"
+
+
+def test_click_bell_workspace_uses_generic_calibrated_perception_tools():
     setup = Setup(
         "piper",
         "click_bell",
         observation_profile="rgbd",
         calibrated_geometry=True,
     )
-    assert "click_bell_localize_press_cap" in setup.tools
+    assert "piper_pixel_to_position" in setup.tools
+    assert all(not name.startswith("click_bell_") for name in setup.tools)
     assert "piper_move_joint" not in setup.tools
 
 
-def test_click_bell_task_motion_adds_only_the_commissioned_preview_tool():
+def test_click_bell_workspace_installs_only_its_task_skill(tmp_path):
+    click_bell = tmp_path / "click-bell"
+    generic = tmp_path / "generic"
+    build(
+        recipe_for(),
+        Setup(
+            "piper",
+            "click_bell",
+            observation_profile="rgbd",
+            calibrated_geometry=True,
+        ),
+        click_bell,
+    )
+    build(recipe_for(), Setup("piper", "generic_task"), generic)
+
+    assert (click_bell / ".agents/skills/click-bell/SKILL.md").is_file()
+    assert not (generic / ".agents/skills/click-bell").exists()
+
+
+def test_manifest_task_motion_adds_only_registered_task_tools():
     setup = Setup(
         "piper",
-        "click_bell",
+        "generic_task",
         observation_profile="rgbd",
         calibrated_geometry=True,
         task_motion_enabled=True,
+        task_specific_tools=("task_plan",),
     )
     assert setup.motion_available is True
     assert setup.base_motion_available is False
-    assert "click_bell_approach_preview" in setup.tools
+    assert "task_plan" in setup.tools
     assert "piper_move_joint" not in setup.tools
+
+
+def test_manifest_task_motion_installs_autonomous_programming_skill(tmp_path):
+    setup = Setup(
+        "piper",
+        "generic_task",
+        observation_profile="rgbd",
+        calibrated_geometry=True,
+        task_motion_enabled=True,
+        task_specific_tools=("task_plan", "task_execute"),
+        task_motion_tools=("task_execute",),
+    )
+    workspace = tmp_path / "click-bell-motion"
+    build(recipe_for(), setup, workspace)
+
+    skills = {path.name for path in (workspace / ".agents/skills").iterdir()}
+    assert "autonomous-control" in skills
+    assert "manual-robot-control" not in skills
+    instructions = (workspace / "AGENTS.md").read_text()
+    assert "Write an autonomous controller" in instructions
+    assert "skill_library_merge" in instructions
+
+
+def test_execution_workspace_contract_is_read_only_and_has_no_merge_tool(tmp_path):
+    setup = Setup("mock", "generic_task", agent_mode="execution")
+    workspace = tmp_path / "execution"
+    build(recipe_for(), setup, workspace)
+
+    contract = json.loads((workspace / "MCP_CONTRACT.json").read_text())
+    assert contract["agent_mode"] == "execution"
+    assert "skill_library_merge" not in contract["tools"]
+    assert "Treat the checked-out skill library and controller code as frozen" in (
+        workspace / "AGENTS.md"
+    ).read_text()
 
 
 def test_subagent_text_only_with_subagents(tmp_path):

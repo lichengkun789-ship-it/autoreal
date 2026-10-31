@@ -2,6 +2,7 @@ from copy import deepcopy
 import math
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from services.piper.contact_motion import ContactStopSettings, PiperGuardedPressExecutor
@@ -242,6 +243,99 @@ def test_guarded_press_requires_previous_no_contact_stage_before_motion():
     assert result["status"] == "failed"
     assert "previous passed no-contact stage" in result["failure_reasons"][0]
     assert reader.interfaces["right"].calls == []
+
+
+def test_dynamic_guarded_press_can_execute_without_duplicate_preflight():
+    reader = Reader()
+    result = PiperGuardedPressExecutor(reader, settings(), sleeper=lambda _: None).run(
+        press_plan(),
+        arm="right",
+        operator_lease_id="lease",
+        execute=True,
+        authorization_guard=lambda: None,
+        require_prior_stage_evidence=False,
+    )
+
+    assert result["status"] == "contact_unverified"
+    assert result["retreat"]["status"] == "passed"
+    assert result["plan_summary"]["prior_stage_evidence_required"] is False
+
+
+def test_interrupted_dynamic_approach_automatically_returns_to_start():
+    reader = Reader()
+    reader.freeze_at_j1 = 0.02
+    plan = press_plan()
+    plan["stages"][0]["plan"]["waypoints"] = [waypoint(0.01), waypoint(0.02)]
+    plan["stages"][1]["plan"]["waypoints"] = [waypoint(0.03)]
+    result = PiperGuardedPressExecutor(reader, settings(), sleeper=lambda _: None).run(
+        plan,
+        arm="right",
+        operator_lease_id="lease",
+        execute=True,
+        authorization_guard=lambda: None,
+        require_prior_stage_evidence=False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["retreat_attempted"] is True
+    assert result["retreat"]["status"] == "passed"
+    assert result["retreat"]["reason"] == (
+        "automatic recovery after interrupted execution"
+    )
+    assert reader.value["arms"]["right"]["joints_rad"][0] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("joint_index", range(6))
+def test_near_zero_joint_feedback_deadband_does_not_timeout(joint_index):
+    reader = Reader()
+    executor = PiperGuardedPressExecutor(reader, settings(), sleeper=lambda _: None)
+    target = list(reader.value["arms"]["right"]["joints_rad"])
+    reader.value["arms"]["right"]["joints_rad"][joint_index] = 0.0
+    target[joint_index] = 0.0115
+
+    result = executor._wait_target(
+        "right",
+        target,
+        contact_baseline=None,
+        authorization_guard=lambda: None,
+    )
+
+    assert result["outcome"] == "reached"
+    assert result["tracking_error_rad"] == pytest.approx(0.0115)
+    assert result["settle_error_rad"] == 0.0
+    assert joint_index + 1 in result["zero_deadband_joints"]
+
+
+def test_near_zero_feedback_outside_deadband_still_times_out():
+    reader = Reader()
+    executor = PiperGuardedPressExecutor(reader, settings(), sleeper=lambda _: None)
+
+    with pytest.raises(TimeoutError, match="did not settle"):
+        executor._wait_target(
+            "right",
+            [0.0, 0.2, -0.2, 0.0, 0.0, 0.0121],
+            contact_baseline=None,
+            authorization_guard=lambda: None,
+        )
+
+
+def test_runtime_step_budget_does_not_include_settle_tolerance():
+    reader = Reader()
+    relaxed = ContactStopSettings(
+        effort_delta_nm=0.5,
+        consecutive_samples=2,
+        poll_interval_s=0.001,
+        waypoint_timeout_s=0.01,
+        settle_tolerance_rad=0.01,
+        max_joint_step_rad=0.05,
+    )
+    executor = PiperGuardedPressExecutor(reader, relaxed, sleeper=lambda _: None)
+    current = np.asarray([0.0, 0.2, -0.2, 0.0, 0.0, 0.0])
+
+    executor._command("right", current, [0.049, 0.2, -0.2, 0.0, 0.0, 0.0])
+
+    with pytest.raises(ValueError, match="per_call_step_exceeded"):
+        executor._command("right", current, [0.051, 0.2, -0.2, 0.0, 0.0, 0.0])
 
 
 def test_no_contact_plan_only_sends_no_commands():

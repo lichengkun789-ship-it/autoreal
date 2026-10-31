@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from services.piper.camera import CameraSpec, RealSenseRig, list_realsense_devices
 
@@ -158,6 +159,32 @@ def test_realsense_rig_close_is_idempotent():
     rig.close()
     rig.close()
     assert rs.pipelines[0].stopped is True
+
+
+def test_realsense_rig_releases_pipeline_whose_start_raises():
+    class FailingPipeline(FakePipeline):
+        def start(self, config):
+            super().start(config)
+            raise RuntimeError("device became busy")
+
+    class FailingSecondRealSense(FakeRealSense):
+        def pipeline(self):
+            value = FailingPipeline() if self.pipelines else FakePipeline()
+            self.pipelines.append(value)
+            return value
+
+    rs = FailingSecondRealSense()
+    rig = RealSenseRig(
+        [CameraSpec("cam_high", "12345"), CameraSpec("cam_right", "67890")],
+        warmup_frames=0,
+        rs_module=rs,
+    )
+
+    with pytest.raises(RuntimeError, match="device became busy"):
+        rig.start()
+
+    assert [pipeline.stopped for pipeline in rs.pipelines] == [True, True]
+    assert rig._pipelines == {}
 
 
 def test_list_realsense_devices_uses_read_only_context_query():

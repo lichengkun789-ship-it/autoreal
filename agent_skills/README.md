@@ -12,7 +12,7 @@ skill, and an absent layer is skipped:
 
 | Layer | Contents |
 | --- | --- |
-| `task/` | `manual-robot-control`, `autonomous-control`, `experience-memory` |
+| `task/` | shared control, session memory, continual learning, and task workflows such as `click-bell` |
 | `perception/common/` | `live-stream`, `wrist-camera-inspection` |
 | `perception/<mode>/` | perception for one observation mode, any robot (none yet) |
 | `perception/<mode>-<robot>/` | robot-specific localization for that observation mode, when implemented |

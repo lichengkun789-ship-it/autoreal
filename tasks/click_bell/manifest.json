@@ -1,12 +1,14 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task_id": "click_bell",
+  "agent_skill": "click-bell",
   "required_capabilities": [
     "rgbd_observation",
     "pixel_localization",
     "cartesian_motion",
-    "bounded_press",
-    "retreat"
+    "segmented_retreat",
+    "gripper_motion",
+    "operator_visual_evaluation"
   ],
-  "evaluator": "evaluator.py:evaluate"
+  "evaluator": "evaluator:evaluate"
 }

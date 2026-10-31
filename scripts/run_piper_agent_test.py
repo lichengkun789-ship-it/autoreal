@@ -19,7 +19,7 @@ import sys
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 
-from harness.backends import get as agent_harness  # noqa: E402
+from harness.operator import launcher_command, model_preflight  # noqa: E402
 from services import arming  # noqa: E402
 from services.controller.config import Configuration  # noqa: E402
 from services.json_io import write_private_json  # noqa: E402
@@ -58,44 +58,6 @@ def validate_configuration(path: Path) -> Configuration:
     return config
 
 
-def model_preflight(config: Configuration, key_file: Path | None) -> dict:
-    launcher = agent_harness(config.agent_cli)
-    provider = config.agent_provider
-    if config.agent_cli == 'claude':
-        from harness.claude_cli import experiment_login
-        from harness.claude_cli.messages_relay import Credential
-        binary = launcher.claude_binary()
-        if provider == "claude-login":
-            if key_file is not None:
-                raise ValueError("claude-login uses the dedicated experiment token; omit --key-file")
-            account = experiment_login.check()
-            credential_path = experiment_login.token_file()
-            return {
-                "agent_cli": config.agent_cli,
-                "provider": provider,
-                "binary": str(binary),
-                "credential": str(credential_path),
-                "account": {key: account.get(key) for key in ("email", "organization")},
-            }
-        Credential(provider, key_file=key_file)
-        return {
-            "agent_cli": config.agent_cli,
-            "provider": provider,
-            "binary": str(binary),
-            "credential": str(key_file.resolve()) if key_file else "environment",
-        }
-    from harness.deepseek_cli.login import Credential
-    binary = launcher.dsh_binary()
-    credential_path = key_file or launcher.default_key(provider)
-    Credential(provider, key_file=credential_path)
-    return {
-        "agent_cli": config.agent_cli,
-        "provider": provider,
-        "binary": str(binary),
-        "credential": str(credential_path.resolve()),
-    }
-
-
 def _motion_evidence(root: Path) -> tuple[list[dict], list[dict], list[str]]:
     requests = []
     audit = root / "mcp.jsonl"
@@ -108,23 +70,6 @@ def _motion_evidence(root: Path) -> tuple[list[dict], list[dict], list[str]]:
     receipt_paths = sorted((root / "piper-motion").glob("agent_joint_step_*.json"))
     receipts = [json.loads(path.read_text()) for path in receipt_paths]
     return requests, receipts, [str(path) for path in receipt_paths]
-
-
-def _launcher_command(config: Configuration, config_path: Path, key_file: Path | None) -> list[str]:
-    command = [
-        sys.executable,
-        "-m",
-        "harness.launcher",
-        "--config",
-        str(config_path),
-        "--non-interactive",
-        "--no-gemini",
-    ]
-    if config.agent_cli == "dsh":
-        command.append("--disable-shell")
-    if key_file is not None:
-        command.extend(("--key-file", str(key_file)))
-    return command
 
 
 def run_trial(
@@ -141,7 +86,7 @@ def run_trial(
     interrupted = False
     arming.write(config.root, True, minutes=arming_minutes)
     try:
-        completed = run_launcher(_launcher_command(config, config_path, key_file), cwd=PROJECT)
+        completed = run_launcher(launcher_command(config, config_path, key_file), cwd=PROJECT)
         returncode = completed.returncode
     except KeyboardInterrupt:
         interrupted = True

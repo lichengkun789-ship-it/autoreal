@@ -10,6 +10,7 @@ import shutil
 from .contract_files import write_contract
 from .recipe import SKILL_SOURCE
 from .templates import render
+from services.task_manifest import task_agent_skills
 
 IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc')
 # Templates may hold machine-local runtime/ state; never copy it.
@@ -40,6 +41,12 @@ def apply_role(recipe, setup, workspace):
     for rule in recipe.omit_skills:
         if rule.when(setup):
             path = skills / rule.skill
+            if path.exists():
+                _no_link(path, 'skills')
+                shutil.rmtree(path)
+    for name in task_agent_skills():
+        if name != setup.task_skill:
+            path = skills / name
             if path.exists():
                 _no_link(path, 'skills')
                 shutil.rmtree(path)

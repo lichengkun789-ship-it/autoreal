@@ -41,6 +41,12 @@ SITE_PATHS_ENVIRONMENT = 'RAX_PROTECTED_PATHS'
 RESUME_PROMPT = ('This session was interrupted and has now been resumed in the same workspace. '
                  'Reread memory/PROGRESS.md, call status, and continue from the live state. '
                  'Do not repeat finished work.')
+INTERRUPT_SENSITIVE_TOOLS = frozenset({
+    'piper_execute_plan',
+    'piper_retreat_plan',
+    'piper_gripper',
+    'piper_move_joint',
+})
 
 
 def dsh_binary(path=None):
@@ -72,7 +78,9 @@ def site_paths(config):
 
 
 def hidden_paths(config):
-    paths = [PROJECT.resolve(), config.root.resolve(), *HOME_SECRETS, *site_paths(config)]
+    from services.skill_library import library_root
+    paths = [PROJECT.resolve(), config.root.resolve(), library_root(config.robot).resolve(),
+             *HOME_SECRETS, *site_paths(config)]
     existing = list(dict.fromkeys(path for path in paths if path.exists()))
     return [path for path in existing if not any(path != other and path.is_relative_to(other)
                                                   for other in existing)]
@@ -85,11 +93,13 @@ def agent_python(config):
 
 def populate_workspace(config, workspace, *, gemini=True):
     from services.workspace import Setup, build, recipe_for
+    from services.skill_library import checkout_library
     for name in ('code', 'memory', 'output', 'runtime/frames', 'tmp'):
         (workspace/name).mkdir(parents=True, exist_ok=True)
     (config.root/'stream').mkdir(mode=0o755, exist_ok=True)
     (workspace/'runtime'/'stream').symlink_to(config.root/'stream', target_is_directory=True)
     built = build(recipe_for(), Setup.from_config(config, gemini=gemini), workspace)
+    built['skill_library'] = checkout_library(config, workspace)
     (workspace/'TASK.md').write_text(f'# Task: {config.task}\n\n{config.task_description.strip()}\n')
     return built
 
@@ -157,6 +167,7 @@ def boundary(config, deployed, socket):
     system_roots = [Path(path).resolve() for path in ('/usr', '/bin', '/lib', '/lib64', '/etc')
                     if Path(path).exists()]
     return {'bwrap': bwrap, 'workspace': str(workspace),
+            'workspace_read_only': config.agent_mode == 'execution',
             'socket_directory': str(Path(socket).parent.resolve()),
             'hidden': [str(path) for path in hidden_paths(config)],
             'reexposed': [str(path) for path in reexposed],
@@ -167,12 +178,13 @@ def patches(config, deployed, socket):
     value = json.loads(Path(deployed['login']).read_text())
     route, provider = credential(deployed).patches(value['model'], config.agent_effort)
     home = Path(deployed['dsh_home'])
+    sandbox_mode = 'workspace-write' if config.agent_mode == 'research' else 'read-only'
     rows = [*provider,
         {'id': 'agent-default-model', 'config': {'provider': route, 'model': value['model']}},
         {'id': 'approval', 'config': {'policy': 'never'}},
         {'id': 'permission', 'config': {'defaultPreset': 'rax',
-            'presets': {'rax': {'sandbox': 'workspace-write', 'approval': 'never'}}}},
-        {'id': 'sandbox-policy', 'config': {'mode': 'workspace-write',
+            'presets': {'rax': {'sandbox': sandbox_mode, 'approval': 'never'}}}},
+        {'id': 'sandbox-policy', 'config': {'mode': sandbox_mode,
             'workspaceRoot': str(deployed['workspace'])}},
         {'id': 'sandbox', 'config': {'runnerCommand': [str(agent_python(config)), '-I',
             str(HERE/'runner.py'), str(home/'boundary.json')],
@@ -279,12 +291,20 @@ def start_robot_service(config, deployed, log, *, started_at, timeout=120):
     socket = deployed['socket']
     socket.unlink(missing_ok=True)
     args = [sys.executable, '-m', 'services.controller.frontend', '--config', str(deployed['configuration']),
-            '--socket', str(socket), '--started-at', str(started_at)]
+            '--socket', str(socket), '--started-at', str(started_at),
+            '--owner-pid', str(os.getpid())]
     login = json.loads(Path(deployed['login']).read_text())
     if login.get('gemini_key_file'):
         args += ['--key-file', login['gemini_key_file']]
     environment = {**os.environ, 'PYTHONPATH': str(PROJECT)}
-    server = subprocess.Popen(args, cwd=PROJECT, env=environment, stdout=log, stderr=log)
+    server = subprocess.Popen(
+        args,
+        cwd=PROJECT,
+        env=environment,
+        stdout=log,
+        stderr=log,
+        start_new_session=True,
+    )
     deadline = time.monotonic() + timeout
     while not socket.exists():
         if server.poll() is not None or time.monotonic() >= deadline:
@@ -305,6 +325,40 @@ def stop(process, grace=10, *, group=False):
         process.wait(timeout=10)
     except ProcessLookupError:
         pass
+
+
+def pending_interrupt_sensitive_calls(root):
+    audit = Path(root)/'mcp.jsonl'
+    if not audit.is_file():
+        return {}
+    pending = {}
+    for line in audit.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        call_id, tool = event.get('call_id'), event.get('tool')
+        if not isinstance(call_id, str) or tool not in INTERRUPT_SENSITIVE_TOOLS:
+            continue
+        if event.get('event') == 'mcp_request':
+            pending[call_id] = tool
+        elif event.get('event') in {'mcp_result', 'mcp_error'}:
+            pending.pop(call_id, None)
+    return pending
+
+
+def wait_for_interrupted_motion(root, *, timeout=45, poll=.1, sleeper=time.sleep):
+    """Let an in-flight robot tool finish its own hold or retreat before shutdown."""
+    pending = pending_interrupt_sensitive_calls(root)
+    if not pending:
+        return {'waited': False, 'status': 'no_motion_in_flight'}
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pending = pending_interrupt_sensitive_calls(root)
+        if not pending:
+            return {'waited': True, 'status': 'motion_finished'}
+        sleeper(poll)
+    return {'waited': True, 'status': 'timeout', 'pending': pending}
 
 
 def launch(config, deployed, *, prompt, seconds=None):
@@ -338,10 +392,22 @@ def launch(config, deployed, *, prompt, seconds=None):
                 stop(agent, group=True)
                 returncode = 124
             reader.join(timeout=5)
-            return 75 if limit_reached.is_set() and returncode else returncode
+            return launch_returncode(returncode, limit_reached.is_set())
+        except KeyboardInterrupt:
+            stop(agent, group=True)
+            agent = None
+            result = wait_for_interrupted_motion(config.root)
+            if result['waited']:
+                print(f'Interrupted motion shutdown: {result}', file=sys.stderr, flush=True)
+            raise
         finally:
             stop(agent, group=True)
             stop(server, grace=30)
+
+
+def launch_returncode(returncode, limit_reached):
+    """Model-call exhaustion is a failed run even if DSH exits cleanly on SIGTERM."""
+    return 75 if limit_reached else returncode
 
 
 def attempt_seconds(attempts):

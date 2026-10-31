@@ -19,7 +19,7 @@ AGENT = Recipe(
     omit_skills=(
         SkillRule('gemini', lambda setup: not setup.gemini),
         SkillRule('manual-robot-control', lambda setup: not setup.base_motion_available),
-        SkillRule('autonomous-control', lambda setup: not setup.base_motion_available),
+        SkillRule('autonomous-control', lambda setup: not setup.motion_available),
         SkillRule('live-stream', lambda setup: not setup.stream_available),
         SkillRule('wrist-camera-inspection', lambda setup: not setup.wrist_camera_inspection_available),
         SkillRule('object-localization', lambda setup: not setup.pixel_localization_available),

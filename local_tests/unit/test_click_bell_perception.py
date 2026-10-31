@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from services.task_tools import compose_task_tools
 from tasks.click_bell.evaluator import evaluate
 from tasks.click_bell.perception import detect_press_cap, localize_saved_frame
-from tasks.click_bell.tools import ClickBellTools
 
 
 def bell_image():
@@ -122,89 +121,7 @@ def test_evaluator_requires_visual_success_evidence():
     assert evaluate({"visual_success": False})["status"] == "failed"
 
 
-def test_click_bell_tool_is_read_only_and_uses_saved_frame(tmp_path):
-    frame = tmp_path / "agent-workspace" / "runtime" / "frames" / "frame1"
-    frame.mkdir(parents=True)
-    bell_image().save(frame / "right.jpg")
-    Image.fromarray(np.full((120, 160), 500, dtype=np.uint16)).save(frame / "right_depth.png")
-    (frame / "meta.json").write_text(
-        json.dumps(
-            {
-                "frame_id": "frame1",
-                "cameras": {
-                    "cam_right_wrist": {
-                        "rgb": "right.jpg",
-                        "depth": "right_depth.png",
-                        "base_frame": "piper_right_base",
-                        "T_base_camera": np.eye(4).tolist(),
-                        "intrinsics": {
-                            "width": 160,
-                            "height": 120,
-                            "fx": 100.0,
-                            "fy": 100.0,
-                            "ppx": 80.0,
-                            "ppy": 60.0,
-                            "model": "distortion.none",
-                            "coeffs": [0.0] * 5,
-                        },
-                    }
-                },
-            }
-        )
-    )
-    tools = ClickBellTools(
-        SimpleNamespace(
-            root=tmp_path,
-            robot="piper",
-            observation_profile="rgbd",
-            backend_options={
-                "cameras": [
-                    {
-                        "name": "cam_right_wrist",
-                        "mount": "right_tcp",
-                        "extrinsics": "candidate.json",
-                    }
-                ]
-            },
-            task_options={},
-        )
-    )
-
-    value, images = tools.call(
-        "click_bell_localize_press_cap",
-        {"frame_id": "frame1", "camera": "cam_right_wrist"},
-    )
-
-    assert tools.mutating == frozenset()
-    assert images == []
-    assert value["press_pixel"] == pytest.approx([80, 36], abs=1)
-
-
-def test_disabled_click_bell_motion_keeps_the_task_toolset_read_only(tmp_path):
-    tools = ClickBellTools(
-        SimpleNamespace(
-            root=tmp_path,
-            robot="piper",
-            observation_profile="rgbd",
-            backend_options={
-                "cameras": [
-                    {
-                        "name": "cam_right_wrist",
-                        "mount": "right_tcp",
-                        "extrinsics": "candidate.json",
-                    }
-                ]
-            },
-            task_options={"motion": {"enabled": False}},
-        )
-    )
-    assert tools.mutating == frozenset()
-    assert [tool["name"] for tool in tools.tools()] == [
-        "click_bell_localize_press_cap"
-    ]
-
-
-def test_task_tool_setup_failure_closes_the_robot_backend():
+def test_task_tool_registry_does_not_attach_piper_tools_to_other_robots():
     class Backend:
         closed = False
 
@@ -213,6 +130,5 @@ def test_task_tool_setup_failure_closes_the_robot_backend():
 
     backend = Backend()
     config = SimpleNamespace(task="click_bell", robot="mock", observation_profile="rgbd")
-    with pytest.raises(ValueError, match="Piper RGB-D"):
-        compose_task_tools(config, backend)
-    assert backend.closed
+    assert compose_task_tools(config, backend) is backend
+    assert backend.closed is False

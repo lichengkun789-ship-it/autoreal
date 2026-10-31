@@ -5,6 +5,9 @@ from __future__ import annotations
 import math
 
 
+DEFAULT_MAX_JOINT_STEP_RAD = 0.25
+
+
 JOINT_LIMITS_RAD: tuple[tuple[float, float], ...] = tuple(
     (math.radians(low), math.radians(high))
     for low, high in (

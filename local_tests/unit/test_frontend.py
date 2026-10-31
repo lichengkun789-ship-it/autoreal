@@ -16,7 +16,13 @@ def test_tools_are_status_plus_backend_tools(tmp_path):
     f = frontend(tmp_path)
     try:
         names = [t['name'] for t in f.tools()]
-        assert names == ['status', 'request_operator', 'mock_observe', 'mock_move']  # No Gemini without a key.
+        assert names == [
+            'status',
+            'request_operator',
+            'skill_library_merge',
+            'mock_observe',
+            'mock_move',
+        ]  # No Gemini without a key.
         status = text(f.call('status', {}))
         assert status['task'] == 'stack_cups' and status['robot_status']['robot'] == 'mock'
         assert status['control_uncertain'] is False
@@ -116,6 +122,25 @@ def test_socket_serves_the_agent_cli_bridge_and_python_scripts(tmp_path, monkeyp
             stop.set()
             server.join(timeout=5)
             f.close()
+
+
+def test_owner_watchdog_requests_shutdown_when_launcher_disappears():
+    from services.controller.frontend import _watch_owner
+
+    parent_ids = iter([42, 1])
+    shutdown = threading.Event()
+    terminated = []
+
+    _watch_owner(
+        42,
+        shutdown,
+        getppid=lambda: next(parent_ids),
+        terminate=lambda: terminated.append(True),
+        interval=0,
+    )
+
+    assert shutdown.is_set()
+    assert terminated == [True]
 
 
 def test_request_operator_waits_for_the_reply(tmp_path):

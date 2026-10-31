@@ -8,7 +8,7 @@ from typing import Iterable
 import numpy as np
 
 from .kinematics import end_transform, joint_frames, rotation_to_rpy
-from .safety import JOINT_LIMITS_RAD
+from .safety import DEFAULT_MAX_JOINT_STEP_RAD, JOINT_LIMITS_RAD
 
 
 JOINT_NAMES = tuple(f"joint_{index}" for index in range(1, 7))
@@ -166,10 +166,11 @@ def _workspace_reasons(
     workspace_min: np.ndarray | None,
     workspace_max: np.ndarray | None,
     link_min_z_m: float | None,
+    tool_offset: np.ndarray,
 ) -> list[str]:
     reasons = []
     frames = joint_frames(joints)
-    tcp = frames[-1][:3, 3]
+    tcp = frames[-1][:3, 3] + frames[-1][:3, :3] @ tool_offset
     if workspace_min is not None and (
         np.any(tcp < workspace_min) or np.any(tcp > workspace_max)
     ):
@@ -191,10 +192,11 @@ def plan_pose(
     relative: bool = False,
     waypoints: int = 12,
     joint_margin_rad: float = 0.02,
-    max_joint_step_rad: float = 0.05,
+    max_joint_step_rad: float = DEFAULT_MAX_JOINT_STEP_RAD,
     workspace_min: Iterable[float] | None = None,
     workspace_max: Iterable[float] | None = None,
     link_min_z_m: float | None = None,
+    tool_offset_tcp_m: Iterable[float] = (0.0, 0.0, 0.0),
 ) -> dict:
     current = np.asarray(tuple(current_joints_rad), dtype=np.float64)
     position = np.asarray(tuple(position_m), dtype=np.float64)
@@ -204,12 +206,15 @@ def plan_pose(
         raise ValueError("Piper pose planning requires a finite 3-D position")
     if type(relative) is not bool:
         raise ValueError("relative must be a boolean")
-    if type(waypoints) is not int or not 2 <= waypoints <= 64:
-        raise ValueError("waypoints must be an integer from 2 to 64")
+    if type(waypoints) is not int or not 2 <= waypoints <= 128:
+        raise ValueError("waypoints must be an integer from 2 to 128")
     if joint_margin_rad < 0:
         raise ValueError("joint margin must be non-negative")
     if not math.isfinite(max_joint_step_rad) or max_joint_step_rad <= 0:
         raise ValueError("maximum joint step must be positive and finite")
+    tool_offset = np.asarray(tuple(tool_offset_tcp_m), dtype=np.float64)
+    if tool_offset.shape != (3,) or not np.all(np.isfinite(tool_offset)):
+        raise ValueError("tool offset must be a finite 3-D vector")
 
     minimum = None if workspace_min is None else np.asarray(tuple(workspace_min), dtype=np.float64)
     maximum = None if workspace_max is None else np.asarray(tuple(workspace_max), dtype=np.float64)
@@ -224,10 +229,13 @@ def plan_pose(
         raise ValueError("link minimum z must be finite")
 
     start = end_transform(current)
+    start_tool_position = start[:3, 3] + start[:3, :3] @ tool_offset
+    goal_tool_position = start_tool_position + position if relative else position
+    goal_rotation = start[:3, :3] if rpy_rad is None else rotation_from_rpy(rpy_rad)
     goal = np.eye(4, dtype=np.float64)
-    goal[:3, 3] = start[:3, 3] + position if relative else position
-    goal[:3, :3] = start[:3, :3] if rpy_rad is None else rotation_from_rpy(rpy_rad)
-    rotation_delta = _rotation_vector(goal[:3, :3] @ start[:3, :3].T)
+    goal[:3, :3] = goal_rotation
+    goal[:3, 3] = goal_tool_position - goal_rotation @ tool_offset
+    rotation_delta = _rotation_vector(goal_rotation @ start[:3, :3].T)
 
     planned = []
     failures = []
@@ -235,8 +243,12 @@ def plan_pose(
     for index in range(1, waypoints + 1):
         fraction = index / waypoints
         target = np.eye(4, dtype=np.float64)
-        target[:3, 3] = (1.0 - fraction) * start[:3, 3] + fraction * goal[:3, 3]
         target[:3, :3] = _rotation_matrix(rotation_delta * fraction) @ start[:3, :3]
+        tool_position = (
+            (1.0 - fraction) * start_tool_position
+            + fraction * goal_tool_position
+        )
+        target[:3, 3] = tool_position - target[:3, :3] @ tool_offset
         solution, converged, solver = solve(previous, target)
         reasons = []
         if not converged:
@@ -250,7 +262,9 @@ def plan_pose(
                     f"({maximum_delta:.6f} > {max_joint_step_rad:.6f} rad)"
                 )
             reasons.extend(
-                _workspace_reasons(solution, minimum, maximum, link_min_z_m)
+                _workspace_reasons(
+                    solution, minimum, maximum, link_min_z_m, tool_offset
+                )
             )
         singular_values = np.linalg.svd(
             numerical_jacobian(solution), compute_uv=False
@@ -264,7 +278,8 @@ def plan_pose(
         row = {
             "index": index,
             "fraction": round(fraction, 6),
-            "position_m": np.round(target[:3, 3], 6).tolist(),
+            "position_m": np.round(tool_position, 6).tolist(),
+            "sdk_end_position_m": np.round(target[:3, 3], 6).tolist(),
             "joints_rad": np.round(solution, 7).tolist(),
             "minimum_hard_limit_margin_rad": round(
                 float(np.min(np.minimum(solution - LOWER, UPPER - solution))), 6
@@ -287,7 +302,7 @@ def plan_pose(
     warnings = []
     if minimum is None:
         warnings.append(
-            "workspace bounds are not configured; this plan cannot authorize motion"
+            "workspace bounds are not configured; Cartesian position is unchecked"
         )
     if link_min_z_m is None:
         warnings.append(
@@ -300,9 +315,13 @@ def plan_pose(
         "dry_run": True,
         "motion_authorized": False,
         "target": {
-            "position_m": np.round(goal[:3, 3], 6).tolist(),
-            "rpy_rad": np.round(rotation_to_rpy(goal[:3, :3]), 6).tolist(),
+            "position_m": np.round(goal_tool_position, 6).tolist(),
+            "rpy_rad": np.round(rotation_to_rpy(goal_rotation), 6).tolist(),
             "relative_input": relative,
+        },
+        "tool": {
+            "frame": "piper_configured_tool_point",
+            "offset_tcp_m": np.round(tool_offset, 6).tolist(),
         },
         "checks": {
             "joint_limits": True,
@@ -312,6 +331,11 @@ def plan_pose(
             "distal_link_min_z": link_min_z_m is not None,
         },
         "warnings": warnings,
+        "start": {
+            "position_m": np.round(start_tool_position, 6).tolist(),
+            "rpy_rad": np.round(rotation_to_rpy(start[:3, :3]), 6).tolist(),
+        },
+        "start_joints_rad": np.round(current, 7).tolist(),
         "waypoints_requested": waypoints,
         "waypoints_planned": len(planned),
         "waypoints": planned,

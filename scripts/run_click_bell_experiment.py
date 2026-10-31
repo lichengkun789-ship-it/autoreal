@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Run one operator-present DeepSeek ClickBell guarded-press trial."""
+"""Legacy specialized ClickBell runner retained for artifact compatibility.
+
+New sessions use ``run_task_experiment.py`` through ``run_click_bell_experiment.sh``.
+"""
 
 from __future__ import annotations
 
@@ -17,13 +20,16 @@ sys.path.insert(0, str(PROJECT))
 from services import arming  # noqa: E402
 from services.controller.config import Configuration  # noqa: E402
 from services.json_io import write_private_json  # noqa: E402
-from services.piper.click_bell_press import ClickBellPressSettings  # noqa: E402
-from services.piper.click_bell_gripper import ClickBellGripperSettings  # noqa: E402
+from harness.operator import launcher_command, model_preflight  # noqa: E402
+from services.piper.click_bell.gripper import ClickBellGripperSettings  # noqa: E402
+from services.piper.click_bell.press import ClickBellPressSettings  # noqa: E402
 from services.piper.episode_recording import EpisodeRecordingSettings  # noqa: E402
-from scripts.run_piper_agent_test import _launcher_command, model_preflight  # noqa: E402
+from services.task_manifest import evaluate_task  # noqa: E402
 
 
-TASK_FILE = PROJECT / "tasks" / "click_bell" / "AGENT_GUARDED_PRESS.md"
+TASK_FILE = PROJECT / "tasks" / "click_bell" / "TASK.md"
+PLAN_TOOL = "click_bell_plan_press"
+RECOVERY_TOOL = "click_bell_recover_observation_pose"
 PRESS_TOOL = "click_bell_guarded_press"
 GRIPPER_TOOL = "click_bell_set_gripper"
 CONFIRM_TOOL = "click_bell_confirm_visual_result"
@@ -38,9 +44,6 @@ def validate_configuration(path: Path):
     base_motion = config.backend_options.get("agent_motion") or {}
     if isinstance(base_motion, dict) and base_motion.get("enabled") is True:
         raise ValueError("generic piper_move_joint must remain disabled for this trial")
-    preview = config.task_options.get("motion") or {}
-    if isinstance(preview, dict) and preview.get("enabled") is True:
-        raise ValueError("approach preview must remain disabled for the guarded press trial")
     settings = ClickBellPressSettings.from_options(
         config.task_options.get("guarded_press"),
         backend_options=config.backend_options,
@@ -67,6 +70,8 @@ def _evidence(root: Path):
         for line in audit.read_text().splitlines():
             event = json.loads(line)
             if event.get("event") == "mcp_request" and event.get("tool") in {
+                RECOVERY_TOOL,
+                PLAN_TOOL,
                 GRIPPER_TOOL,
                 PRESS_TOOL,
                 CONFIRM_TOOL,
@@ -74,53 +79,85 @@ def _evidence(root: Path):
             }:
                 requests.append(event)
     receipt_paths = sorted((root / "piper-motion").glob("agent_click_bell_press_*.json"))
+    recovery_paths = sorted(
+        (root / "piper-motion").glob("agent_click_bell_recovery_*.json")
+    )
     gripper_paths = sorted(
         (root / "piper-motion").glob("agent_click_bell_gripper_*.json")
     )
     result_paths = sorted((root / "click-bell-results").glob("*.json"))
+    recording_paths = sorted((root / "recordings").glob("*/manifest.json"))
+    plan_paths = sorted((root / "click-bell-plans").glob("*.json"))
     return (
         requests,
+        [json.loads(path.read_text()) for path in plan_paths],
+        [json.loads(path.read_text()) for path in recovery_paths],
         [json.loads(path.read_text()) for path in receipt_paths],
         [json.loads(path.read_text()) for path in gripper_paths],
         [json.loads(path.read_text()) for path in result_paths],
         [str(path) for path in receipt_paths],
         [str(path) for path in gripper_paths],
         [str(path) for path in result_paths],
+        [json.loads(path.read_text()) for path in recording_paths],
+        [str(path) for path in recording_paths],
+        [str(path) for path in plan_paths],
+        [str(path) for path in recovery_paths],
     )
 
 
 def _evaluate(
-    returncode, requests, receipts, gripper_receipts, results, final_arming
+    returncode,
+    requests,
+    plans,
+    receipts,
+    gripper_receipts,
+    results,
+    recordings,
+    final_arming,
+    recovery_receipts=(),
 ) -> dict:
     reasons = []
+    warnings = []
     if returncode != 0:
         reasons.append(f"Agent launcher exited with {returncode}")
     calls = [item.get("tool") for item in requests]
-    expected = [GRIPPER_TOOL, PRESS_TOOL, GRIPPER_TOOL, "request_operator", CONFIRM_TOOL]
-    if calls != expected:
-        reasons.append(f"expected task tool order {expected}, found {calls}")
-    gripper_calls = [
-        item.get("arguments", {}).get("action")
-        for item in requests
-        if item.get("tool") == GRIPPER_TOOL
-    ]
-    if gripper_calls != ["close", "open"]:
-        reasons.append(f"expected gripper close then open, found {gripper_calls}")
+    recovery_calls = [index for index, name in enumerate(calls) if name == RECOVERY_TOOL]
+    if len(recovery_receipts) != len(recovery_calls):
+        reasons.append(
+            "recovery calls and receipts differ "
+            f"({len(recovery_calls)} calls, {len(recovery_receipts)} receipts)"
+        )
+    elif any(
+        item.get("kind") != "piper_agent_click_bell_recovery"
+        or item.get("status") != "passed"
+        for item in recovery_receipts
+    ):
+        reasons.append("ClickBell recovery receipt did not pass")
     if calls.count(PRESS_TOOL) != 1:
         reasons.append(f"expected one {PRESS_TOOL} request, found {calls.count(PRESS_TOOL)}")
-    if calls.count("request_operator") != 1:
-        reasons.append("expected one operator visual confirmation request")
-    if calls.count(CONFIRM_TOOL) != 1:
-        reasons.append(f"expected one {CONFIRM_TOOL} request")
+    admitted_plans = [
+        plan
+        for plan in plans
+        if plan.get("dynamic") is True
+        and plan.get("execution_admissible") is True
+        and plan.get("used") is True
+    ]
+    if not admitted_plans:
+        reasons.append("no admitted dynamic plan was consumed")
+    if len(plans) > 1:
+        warnings.append(f"Agent produced {len(plans)} plans before completing the task")
     if len(receipts) != 1:
         reasons.append(f"expected one motion receipt, found {len(receipts)}")
     elif (
         receipts[0].get("kind") != "piper_agent_click_bell_guarded_press"
         or receipts[0].get("status") not in {"passed", "contact_unverified"}
         or receipts[0].get("retreat", {}).get("status") != "passed"
-        or receipts[0].get("recording", {}).get("status") != "passed"
     ):
-        reasons.append("motion receipt did not confirm press, retreat, and recording")
+        reasons.append("motion receipt did not confirm press and retreat")
+    elif admitted_plans and receipts[0].get("admission", {}).get("plan_id") not in {
+        plan.get("plan_id") for plan in admitted_plans
+    }:
+        reasons.append("motion receipt is not bound to the consumed dynamic plan")
     if len(gripper_receipts) != 2:
         reasons.append(
             f"expected two gripper receipts, found {len(gripper_receipts)}"
@@ -132,26 +169,54 @@ def _evaluate(
         elif any(
             receipt.get("kind") != "piper_agent_click_bell_gripper"
             or receipt.get("status") != "passed"
-            or receipt.get("recording", {}).get("status") != "passed"
             for receipt in by_action.values()
         ):
-            reasons.append("gripper receipts did not confirm motion and recording")
+            reasons.append("gripper receipts did not confirm motion")
         elif receipts and by_action["open"].get("press_id") != receipts[0].get("press_id"):
             reasons.append("gripper open receipt is not bound to the guarded press")
+    task_evaluation = None
     if len(results) != 1:
         reasons.append(f"expected one visual result, found {len(results)}")
-    elif results[0].get("evaluation", {}).get("status") not in {
-        "passed",
-        "failed",
-        "unverified",
-    }:
-        reasons.append("visual result has no valid task evaluation")
+    else:
+        recorded = results[0].get("evaluation", {})
+        status = recorded.get("status")
+        visual_success = {"passed": True, "failed": False, "unverified": None}.get(status)
+        if status not in {"passed", "failed", "unverified"}:
+            reasons.append("visual result has no valid task evaluation")
+        else:
+            task_evaluation = evaluate_task(
+                "click_bell",
+                {
+                    "visual_success": visual_success,
+                    "visual_reason": recorded.get("reason"),
+                },
+            )
+    if len(recordings) != 1:
+        reasons.append(f"expected one complete task recording, found {len(recordings)}")
+    elif (
+        recordings[0].get("kind") != "piper_task_episode_recording"
+        or recordings[0].get("scope") != "task"
+        or recordings[0].get("status") != "passed"
+    ):
+        reasons.append("complete task recording did not pass")
     if final_arming.get("armed") is not False:
         reasons.append("session was not disarmed after the trial")
-    return {"status": "passed" if not reasons else "failed", "reasons": reasons}
+    return {
+        "status": "passed" if not reasons else "failed",
+        "reasons": reasons,
+        "warnings": warnings,
+        "task_evaluation": task_evaluation,
+    }
 
 
-def run_trial(config, config_path, *, key_file, arming_minutes, run_launcher=subprocess.run):
+def run_trial(
+    config,
+    config_path,
+    *,
+    key_file,
+    arming_minutes,
+    run_launcher=subprocess.run,
+):
     started_at = datetime.now(timezone.utc).isoformat()
     returncode = None
     launcher_error = None
@@ -159,7 +224,7 @@ def run_trial(config, config_path, *, key_file, arming_minutes, run_launcher=sub
     arming.write(config.root, True, minutes=arming_minutes)
     try:
         completed = run_launcher(
-            _launcher_command(config, config_path, key_file), cwd=PROJECT
+            launcher_command(config, config_path, key_file), cwd=PROJECT
         )
         returncode = completed.returncode
     except KeyboardInterrupt:
@@ -173,24 +238,33 @@ def run_trial(config, config_path, *, key_file, arming_minutes, run_launcher=sub
     final_arming = arming.read(config.root)
     (
         requests,
+        plans,
+        recovery_receipts,
         receipts,
         gripper_receipts,
         results,
         receipt_paths,
         gripper_paths,
         result_paths,
+        recordings,
+        recording_paths,
+        plan_paths,
+        recovery_paths,
     ) = _evidence(config.root)
     evaluation = _evaluate(
         returncode,
         requests,
+        plans,
         receipts,
         gripper_receipts,
         results,
+        recordings,
         final_arming,
+        recovery_receipts,
     )
     report = {
         "schema_version": 1,
-        "kind": "piper_agent_click_bell_press_commissioning",
+        "kind": "piper_agent_click_bell_experiment",
         "status": evaluation["status"],
         "started_at": started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -209,12 +283,15 @@ def run_trial(config, config_path, *, key_file, arming_minutes, run_launcher=sub
             }
             for item in requests
         ],
+        "dynamic_plans": plan_paths,
+        "recovery_receipts": recovery_paths,
         "motion_receipts": receipt_paths,
         "gripper_receipts": gripper_paths,
         "visual_results": result_paths,
+        "task_recording": recording_paths[0] if len(recording_paths) == 1 else None,
         "evaluation": evaluation,
     }
-    report_path = config.root / "piper-agent-click-bell-press.json"
+    report_path = config.root / "click-bell-experiment.json"
     write_private_json(report_path, report, directory_mode=0o700)
     report["report"] = str(report_path)
     return report
@@ -243,7 +320,14 @@ def main() -> int:
         "agent_cli": preflight["agent_cli"],
         "provider": preflight["provider"],
         "model": config.agent_model or "deepseek-flash",
-        "tools": [GRIPPER_TOOL, PRESS_TOOL, "request_operator", CONFIRM_TOOL],
+        "tools": [
+            RECOVERY_TOOL,
+            PLAN_TOOL,
+            GRIPPER_TOOL,
+            PRESS_TOOL,
+            "request_operator",
+            CONFIRM_TOOL,
+        ],
         "arm": settings.arm,
         "gripper": {
             "arm": gripper.arm,
@@ -256,19 +340,22 @@ def main() -> int:
         "max_contact_travel_m": 0.005,
         "recording_fps": recording.fps,
         "save_depth": recording.save_depth,
-        "motion_sequence": ["gripper_close", "guarded_press", "gripper_open"],
+        "recording_scope": "complete_task",
+        "motion_sequence": [
+            "recover_interrupted_path_if_required",
+            "fresh_rgbd_dynamic_plan",
+            "gripper_close",
+            "direct_guarded_press_and_retreat",
+            "gripper_open",
+        ],
     }
     print(json.dumps(plan, indent=2))
     if not args.execute:
         print("No Agent, robot service, or motion command was started.")
         return 0
 
-    phrase = "RUN CLICK BELL GUARDED PRESS"
-    print("WARNING: DeepSeek may close the gripper, execute one press, and reopen it.")
+    print("Starting the DeepSeek ClickBell task immediately.")
     print("Keep the workspace clear and answer the visual confirmation request after retreat.")
-    if input(f"Type exactly '{phrase}' to continue: ").strip() != phrase:
-        print("not armed")
-        return 1
     report = run_trial(
         config,
         config_path,

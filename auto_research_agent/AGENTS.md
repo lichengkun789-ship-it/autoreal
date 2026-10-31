@@ -32,6 +32,8 @@ observation without motion or cameras during hardware bring-up.
 
 Read `TASK.md`, any existing `memory/PROGRESS.md`, and `MCP_SESSION.md`, then call
 `status`. Do not redo completed work merely because the conversation resumed.
+Read [continual-learning](.agents/skills/continual-learning/SKILL.md) and
+`skill-library/INDEX.md` before inventing a new procedure.
 {% if subagent_cap %}
 
 You may delegate analysis to up to {{ subagent_cap }} subagents at once, but only the
@@ -40,19 +42,27 @@ primary agent may call robot tools.
 
 ## Workflow
 
+{% if agent_mode == "execution" %}
+1. Treat the checked-out skill library and controller code as frozen. Do not edit or
+   replace the procedure during this run.
+2. Select a skill whose preconditions and tested range match a fresh observation.
+3. Run it end to end, save its report and task evidence, and report failure without
+   patching the program. Repairs belong in a new research session.
+{% elif robot.motion_available or robot.task_motion_available %}
 {% if robot.motion_available %}
 1. Read [manual-robot-control](.agents/skills/manual-robot-control/SKILL.md) and solve
    every condition in `TASK.md` through measured observations and small actions.
+{% else %}
+1. Read the active task skill and
+   [robot-interface](.agents/skills/robot-interface/SKILL.md), then solve the task
+   through the task-specific tools and measured observations.
+{% endif %}
 2. Write an autonomous controller under `code/<project>/` that checks preconditions,
    reacquires the scene, verifies each step, and stops clearly on unknown state.
 3. Test it after operator resets and record every run in `memory/RUNS.md`. See
    [autonomous-control](.agents/skills/autonomous-control/SKILL.md).
-{% elif robot.task_motion_available %}
-1. Read `TASK.md` and [robot-interface](.agents/skills/robot-interface/SKILL.md).
-2. Call `{{ robot.status }}` and inspect the task tool's arming state and remaining
-   call budget.
-3. Use only the task-specific motion tool named in `MCP_SESSION.md`, at most as often
-   as its budget permits. Record its receipt and reacquire status after it returns.
+4. Package reusable, evidence-backed sub-tasks in `skill-library/`, commit them, and
+   call `skill_library_merge` before the session ends.
 {% else %}
 1. Read [robot-interface](.agents/skills/robot-interface/SKILL.md).
 2. Call `{{ robot.status }}` and `{{ robot.observe }}`. Establish whether both arms
@@ -74,9 +84,15 @@ that move the robot at the same time.{% endif %}
 
 ## Workspace and artifacts
 
+{% if agent_mode == "research" %}
 This workspace is the only writable directory. The robot is reachable only through
 MCP. Keep frames under `{{ vocab.frames }}`, temporary output under `output/`, and code
 under `code/`. Do not load whole recordings into context.
+{% else %}
+The execution workspace is read-only. The robot is reachable only through MCP. Read
+frames and frozen skills in place; task receipts and recordings are written by the
+host service outside the workspace. Do not load whole recordings into context.
+{% endif %}
 
 ## Notes and compaction
 

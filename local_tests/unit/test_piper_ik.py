@@ -67,6 +67,28 @@ def test_plan_pose_preserves_current_orientation_when_omitted():
     assert report["waypoints"][-1]["jacobian_condition_number"] > 1
 
 
+def test_plan_pose_targets_configured_tool_point_instead_of_sdk_end():
+    start = end_transform(START)
+    offset = np.asarray([0.0, 0.0, 0.1358])
+    tool_start = start[:3, 3] + start[:3, :3] @ offset
+    report = plan_pose(
+        START,
+        [0.004, 0.0, 0.0],
+        relative=True,
+        waypoints=4,
+        workspace_min=[-1.0, -1.0, -1.0],
+        workspace_max=[1.0, 1.0, 1.0],
+        tool_offset_tcp_m=offset,
+    )
+
+    assert report["status"] == "passed"
+    assert report["start"]["position_m"] == pytest.approx(tool_start, abs=1e-6)
+    assert report["target"]["position_m"] == pytest.approx(
+        tool_start + [0.004, 0.0, 0.0], abs=1e-6
+    )
+    assert report["tool"]["offset_tcp_m"] == pytest.approx(offset)
+
+
 def test_plan_pose_rejects_a_joint_jump_over_the_configured_waypoint_cap():
     target = end_transform(GOAL)
     report = plan_pose(

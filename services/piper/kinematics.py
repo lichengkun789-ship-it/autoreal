@@ -81,3 +81,20 @@ def pose_report(joints_rad: Iterable[float]) -> dict:
         "position_m": np.round(position, 6).tolist(),
         "rpy_rad": np.round(rpy, 6).tolist(),
     }
+
+
+def tool_pose_report(
+    joints_rad: Iterable[float], tool_offset_tcp_m: Iterable[float]
+) -> dict:
+    """Pose of a configured tool point with the SDK end-frame orientation."""
+    transform = end_transform(joints_rad)
+    offset = np.asarray(tuple(tool_offset_tcp_m), dtype=np.float64)
+    if offset.shape != (3,) or not np.all(np.isfinite(offset)):
+        raise ValueError("tool offset must be a finite 3-D vector")
+    position = transform[:3, 3] + transform[:3, :3] @ offset
+    return {
+        "frame": "piper_configured_tool_point",
+        "position_m": np.round(position, 6).tolist(),
+        "rpy_rad": np.round(rotation_to_rpy(transform[:3, :3]), 6).tolist(),
+        "offset_tcp_m": np.round(offset, 6).tolist(),
+    }

@@ -7,6 +7,7 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 
 from services.piper.ik import plan_pose, rotation_from_rpy
+from services.piper.safety import DEFAULT_MAX_JOINT_STEP_RAD
 
 
 def plan_press_path(
@@ -18,9 +19,10 @@ def plan_press_path(
     approach_distances_m: Sequence[float] = (0.06, 0.02, 0.005, 0.0),
     waypoint_counts: Sequence[int] = (64, 24, 16, 8),
     joint_margin_rad: float = 0.02,
-    max_joint_step_rad: float = 0.05,
+    max_joint_step_rad: float = DEFAULT_MAX_JOINT_STEP_RAD,
     workspace_min: Iterable[float] | None = None,
     workspace_max: Iterable[float] | None = None,
+    workspace_required: bool = True,
     link_min_z_m: float | None = None,
     tool_geometry_verified: bool = False,
 ) -> dict:
@@ -50,6 +52,8 @@ def plan_press_path(
         raise ValueError("approach distances must be finite and non-negative")
     if any(before <= after for before, after in zip(distances, distances[1:])):
         raise ValueError("approach distances must be strictly descending")
+    if type(workspace_required) is not bool:
+        raise ValueError("workspace_required must be true or false")
 
     rotation = rotation_from_rpy(rpy)
     current = list(current_joints_rad)
@@ -89,8 +93,10 @@ def plan_press_path(
     warnings = []
     if not tool_geometry_verified:
         warnings.append("tool contact offset is provisional and must be physically verified")
-    if not workspace_configured:
+    if workspace_required and not workspace_configured:
         warnings.append("workspace bounds are not configured")
+    elif not workspace_required:
+        warnings.append("workspace bounds check is disabled by operator task configuration")
     if not clearance_configured:
         warnings.append("distal-link minimum height is not configured")
     warnings.append(
@@ -100,7 +106,7 @@ def plan_press_path(
     geometry_admissible = bool(
         passed
         and tool_geometry_verified
-        and workspace_configured
+        and (workspace_configured or not workspace_required)
         and clearance_configured
     )
     return {
@@ -119,6 +125,8 @@ def plan_press_path(
         "start_joints_rad": start_joints,
         "tool_contact_offset_tcp_m": offset.tolist(),
         "tool_geometry_verified": bool(tool_geometry_verified),
+        "workspace_check_required": workspace_required,
+        "workspace_bounds_configured": workspace_configured,
         "target_rpy_rad": rpy.tolist(),
         "stages_requested": len(distances),
         "stages_planned": len(stages),

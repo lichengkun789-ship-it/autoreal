@@ -11,6 +11,7 @@ from harness.backends import NAMES as AGENT_CLIS, PROVIDERS as PROVIDERS_BY_CLI
 AGENT_EFFORTS = ('high', 'xhigh', 'max')
 PROVIDERS = tuple(dict.fromkeys(provider for cli in AGENT_CLIS for provider in PROVIDERS_BY_CLI[cli]))
 PROFILES = ('rgbd', 'rgb-only', 'state-only')
+AGENT_MODES = ('research', 'execution')
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class Configuration:
     agent_provider: str = 'claude-login'
     agent_effort: str = 'xhigh'
     agent_model: str | None = None  # Provider default (Opus 5.5) when unset.
+    agent_mode: str = 'research'    # research writes/tests code; execution is read-only.
     session_seconds: int = 4 * 3600
     max_model_calls: int = 4000
     subagents: int = 0              # 0: the Agent tool is removed.
@@ -59,6 +61,8 @@ class Configuration:
             raise ValueError('DeepSeek Harness does not support subagents in this real-robot backend')
         if self.agent_effort not in AGENT_EFFORTS:
             raise ValueError(f'agent_effort must be one of {AGENT_EFFORTS}')
+        if self.agent_mode not in AGENT_MODES:
+            raise ValueError(f'agent_mode must be one of {AGENT_MODES}')
         if type(self.session_seconds) is not int or not 60 <= self.session_seconds <= 7 * 24 * 3600:
             raise ValueError('session_seconds must be 60..604800')
         if type(self.max_model_calls) is not int or self.max_model_calls < 1:

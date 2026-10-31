@@ -13,9 +13,9 @@ import time
 from services import arming
 from services.json_io import write_private_json
 
-from .agent_motion import AgentMotionStopped
-from .episode_recording import EpisodeRecordingSettings, MotionEpisodeRecorder
-from .gripper_characterization import GripperCycleSettings, PiperGripperSetRunner
+from ..agent_motion import AgentMotionStopped
+from ..episode_recording import EpisodeRecordingSettings, TaskEpisodeRecorder
+from ..gripper_characterization import GripperCycleSettings, PiperGripperSetRunner
 
 
 HARD_CLOSED_WIDTH_M = 0.0
@@ -194,7 +194,8 @@ class ClickBellGripperController:
         camera_timeout_ms: int = 3000,
         sleeper=time.sleep,
         arming_reader=arming.read,
-        recorder_factory=MotionEpisodeRecorder,
+        recorder_factory=None,
+        task_recorder=None,
         runner_factory=PiperGripperSetRunner,
     ):
         self.root = Path(config_root)
@@ -207,7 +208,14 @@ class ClickBellGripperController:
         self.camera_timeout_ms = camera_timeout_ms
         self.sleeper = sleeper
         self.arming_reader = arming_reader
-        self.recorder_factory = recorder_factory
+        self.task_recorder = task_recorder or TaskEpisodeRecorder(
+            self.root,
+            cameras,
+            camera_names,
+            recording,
+            camera_timeout_ms=camera_timeout_ms,
+            **({} if recorder_factory is None else {"recorder_factory": recorder_factory}),
+        )
         self.runner_factory = runner_factory
         self.lease_since = None
         self.phase = "awaiting_close"
@@ -264,7 +272,12 @@ class ClickBellGripperController:
             if action == "close"
             else self.settings.closed_width_m
         )
-        if abs(current - expected) > self.settings.runner_settings.target_tolerance_m:
+        tolerance = self.settings.runner_settings.target_tolerance_m
+        already_closed = (
+            action == "close"
+            and abs(current - self.settings.closed_width_m) <= tolerance
+        )
+        if abs(current - expected) > tolerance and not already_closed:
             raise PermissionError(
                 f"ClickBell gripper {action} requires start width {expected:.4f} m; "
                 f"measured {current:.4f} m"
@@ -311,33 +324,52 @@ class ClickBellGripperController:
             else self.settings.open_width_m
         )
         press = None if action == "close" else self._press_for_lease(since)
-        recorder = self.recorder_factory(
-            self.root,
-            self.cameras,
-            self.camera_names,
-            self.recording,
-            camera_timeout_ms=self.camera_timeout_ms,
-        )
         try:
-            recorder.start()
+            if action == "close":
+                self.task_recorder.start()
+            elif self.task_recorder.state != "recording":
+                raise RuntimeError(
+                    f"ClickBell task recorder is {self.task_recorder.state} before open"
+                )
+            self.task_recorder.mark(f"gripper_{action}_started", arm=self.settings.arm)
         except BaseException as exc:
             raise AgentMotionStopped(
-                f"ClickBell gripper recording failed before motion: {type(exc).__name__}: {exc}",
+                f"ClickBell task recording failed before gripper {action}: "
+                f"{type(exc).__name__}: {exc}",
                 control_certain=True,
             ) from exc
         runner = self.runner_factory(
             self.reader,
             self.settings.runner_settings,
             sleeper=self.sleeper,
-            sample_observer=recorder.record_robot_sample,
+            sample_observer=self.task_recorder.record_robot_sample,
         )
-        result = runner.run(
+        try:
+            result = runner.run(
+                arm=self.settings.arm,
+                target_m=target,
+                execute=True,
+                authorization_guard=lambda: self._require_same_lease(since),
+            )
+        except BaseException as exc:
+            self.task_recorder.abort(f"gripper_{action}_exception")
+            raise
+        self.task_recorder.mark(
+            f"gripper_{action}_finished",
             arm=self.settings.arm,
-            target_m=target,
-            execute=True,
-            authorization_guard=lambda: self._require_same_lease(since),
+            status=result.get("status"),
+            final_width_m=result.get("final_width_m"),
         )
-        recording = recorder.stop()
+        if action == "open" or result.get("status") != "passed":
+            recording = self.task_recorder.stop(
+                reason=(
+                    "task_motion_completed"
+                    if result.get("status") == "passed"
+                    else f"gripper_{action}_failed"
+                )
+            )
+        else:
+            recording = self.task_recorder.reference()
         result.update(
             {
                 "kind": "piper_agent_click_bell_gripper",
@@ -365,11 +397,17 @@ class ClickBellGripperController:
         }
         if result.get("status") == "passed":
             self.phase = "closed" if action == "close" else "opened"
+            if action == "open":
+                for prior in self.actions:
+                    prior["recording"] = recording.get("manifest")
             self.actions.append(action_result)
-        if result.get("status") != "passed" or recording.get("status") != "passed":
+        recording_ok = recording.get("status") == (
+            "recording" if action == "close" else "passed"
+        )
+        if result.get("status") != "passed" or not recording_ok:
             reasons = list(result.get("failure_reasons", ()))
-            if recording.get("status") != "passed":
-                reasons.append("gripper episode recording was incomplete")
+            if not recording_ok:
+                reasons.append("task episode recording was incomplete")
             raise AgentMotionStopped(
                 f"Piper ClickBell gripper {action} stopped: {'; '.join(reasons)}; "
                 f"receipt: {path}",
@@ -390,7 +428,11 @@ class ClickBellGripperController:
             raise ValueError("ClickBell gripper close/open sequence is incomplete")
         if self.actions[-1].get("press_id") != press_id:
             raise ValueError("gripper open is not bound to this guarded press")
+        recording = self.task_recorder.result
+        if not isinstance(recording, dict) or recording.get("status") != "passed":
+            raise ValueError("ClickBell task recording is incomplete")
         return {
             "actions": list(self.actions),
-            "recordings": [item["recording"] for item in self.actions],
+            "recording": recording.get("manifest"),
+            "recording_detail": recording,
         }

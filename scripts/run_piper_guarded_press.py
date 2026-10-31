@@ -26,6 +26,7 @@ from services.piper.minimum_motion import (  # noqa: E402
     validate_probe_receipt,
     validate_software_hold_confirmation,
 )
+from services.piper.safety import DEFAULT_MAX_JOINT_STEP_RAD  # noqa: E402
 from services.piper.sdk_reader import PiperSdkReader  # noqa: E402
 from services.storage_root import artifact_root  # noqa: E402
 
@@ -100,7 +101,9 @@ def main() -> int:
             speed_percent=args.speed_percent,
             feedback_max_age_s=float(options.get("feedback_max_age_s", 0.25)),
             joint_margin_rad=float(options.get("joint_limit_margin_rad", 0.02)),
-            max_joint_step_rad=float(options.get("max_joint_step_rad", 0.05)),
+            max_joint_step_rad=float(
+                options.get("max_joint_step_rad", DEFAULT_MAX_JOINT_STEP_RAD)
+            ),
             waypoint_timeout_s=args.waypoint_timeout_s,
             settle_tolerance_rad=args.settle_tolerance_rad,
         )

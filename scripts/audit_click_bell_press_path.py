@@ -14,9 +14,10 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 
 from services.json_io import write_private_json  # noqa: E402
+from services.piper.safety import DEFAULT_MAX_JOINT_STEP_RAD  # noqa: E402
 from services.piper.tooling import GRIPPER_CENTER_CONTACT_OFFSET_TCP_M  # noqa: E402
 from tasks.click_bell.perception import localize_saved_frame  # noqa: E402
-from tasks.click_bell.planning import plan_press_path  # noqa: E402
+from services.piper.click_bell.planning import plan_press_path  # noqa: E402
 
 
 def main() -> int:
@@ -62,7 +63,9 @@ def main() -> int:
             tool_contact_offset_tcp_m=args.tool_contact_offset_tcp_m,
             rpy_rad=[math.radians(value) for value in args.rpy_deg],
             joint_margin_rad=float(options.get("joint_limit_margin_rad", 0.02)),
-            max_joint_step_rad=float(options.get("max_joint_step_rad", 0.05)),
+            max_joint_step_rad=float(
+                options.get("max_joint_step_rad", DEFAULT_MAX_JOINT_STEP_RAD)
+            ),
             workspace_min=None if bounds is None else bounds["min"],
             workspace_max=None if bounds is None else bounds["max"],
             link_min_z_m=options.get("link_min_z_m"),

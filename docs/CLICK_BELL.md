@@ -1,11 +1,25 @@
 # ClickBell task bring-up
 
-ClickBell is the first task package layered on the task-neutral Piper backend. Its
-current tool detects the yellow press cap geometrically associated with the largest
-blue bell component in a saved RGB-D frame. It erodes the selected component, rejects
-gross depth outliers, fits the remaining surface plane, and returns the surface centre,
-normal, fit quality, pixel, and legacy centre-pixel depth in that camera's named Piper
-base frame. It never commands the robot.
+ClickBell is the first task package layered on the task-neutral Piper backend. The
+active Agent contract contains no `click_bell_*` robot tools. DeepSeek or a
+research-mode perception program identifies the yellow press cap in a fresh RGB-D
+frame, converts pixels with `piper_pixel_to_position`, and composes generic Piper
+planning, segmented execution, hold, retreat, and gripper tools.
+
+## AutoRAX ownership and invocation
+
+- `tasks/click_bell/` owns the task goal, reset procedure, optional offline detector,
+  and evaluator.
+- `agent_skills/task/click-bell/SKILL.md` tells the Agent how to use the live contract.
+- `services/piper/` owns task-independent Piper geometry, motion, gripper, hold,
+  recording, and receipts.
+- `services/piper/task_adapters.json` intentionally registers no ClickBell adapter.
+- `scripts/run_click_bell_experiment.sh` creates and launches one complete AutoRAX session.
+
+The experiment wrapper does not prescribe actions. DeepSeek reads `TASK.md` and the
+installed Skill, then chooses and sequences generic Piper MCP tools. Geometry, IK,
+motion, retreat, gripper commands, and complete-session recording execute locally;
+the model never receives direct SDK access.
 
 ## Current commissioned cameras
 
@@ -60,7 +74,7 @@ Piper SDK TCP frame using the owned tool profile, then checks staged 60 mm, 20 m
 
 The Piper URDF places both gripper-finger joint origins 135.8 mm along the
 gripper-base tool axis. The operator accepted this as matching the installed Piper on
-2026-10-30, so AutoReal owns `[0, 0, 0.1358] m` as the closed-gripper centre contact
+2026-10-30, so AutoRAX owns `[0, 0, 0.1358] m` as the closed-gripper centre contact
 offset. Pass `--unverified-tool-geometry` only when deliberately testing another tool.
 
 ```bash
@@ -102,9 +116,9 @@ The runner remains outside the Agent tool surface:
 
 Without `--execute`, this validates admission and writes a plan receipt. Execution is
 still refused until the press path has commissioned workspace bounds and distal-link
-clearance. Piper gripper SDK conversion and hard command bounds now live in
-`services/piper/gripper.py`. The general backend exposes no gripper command; the
-ClickBell task can opt into the separately commissioned `click_bell_set_gripper` tool.
+clearance. Piper gripper SDK conversion and hard command bounds live in
+`services/piper/gripper.py`; commissioning admission and Agent execution live in
+`services/piper/gripper_motion.py` and are exposed generically as `piper_gripper`.
 
 ### Gripper and effort commissioning
 
@@ -313,8 +327,55 @@ The shortest controlled path to a press primitive is:
 6. Expose the resulting press macro to the Agent only through operator arming, a task
    allowlist, one-call budget, timeout, receipt, and guaranteed retreat attempt.
 
-These gates admit only the commissioned right-arm ClickBell path. Other poses, arms,
-objects, or task geometries remain perception/planning-only until separately tested.
+These gates admit only the commissioned right-arm ClickBell geometry and motion
+envelope. Dynamic targets must still pass the same workspace, link-height, joint-limit,
+step-size, feedback, contact-travel, and retreat checks.
+
+### Dynamic target planning and region audit
+
+The Agent never presses a fixed button coordinate. It captures fresh overview and
+wrist RGB-D images, selects several pixels inside the current yellow cap, rejects depth
+outliers, and converts the retained pixels with `piper_pixel_to_position`. It then
+calls `piper_plan_pose` for the configured closed-gripper tool point. The returned
+`plan_id` is short-lived and bound to measured state and the current arming lease.
+
+`piper_execute_plan(plan_id, waypoints=N)` advances only `N` planned waypoints and
+returns progress to the Agent. Between segments the Agent can observe, continue,
+`piper_hold`, partially retreat with `piper_retreat_plan(..., waypoints=M)`, fully
+retreat by omitting the count, or abandon the plan and generate a revised research
+controller. This is Agent-supervised adaptation between deterministic local motion
+segments; it is not language-model hard-real-time control.
+
+The backend still checks configured tool-point workspace bounds, distal-link minimum
+height, IK convergence, Piper joint limits, adjacent waypoint changes, fresh feedback,
+arming lease, and execution budget. Those are robot capability constraints, not a
+task-specific placement box or a fixed ClickBell path.
+
+The configured maximum change between adjacent planned joint waypoints is `0.25 rad`.
+The same `0.25 rad` ceiling applies when the executor compares each command with live
+measured feedback. Settle tolerance is used only to decide whether a target has been
+reached; it does not enlarge the command budget or change Piper's mechanical limits.
+
+Saved observations from the centre and boundary of a test region can still be checked
+offline without opening CAN or sending motion. The script below is retained as
+commissioning analysis, not as an Agent MCP tool:
+
+```bash
+.venv/bin/python scripts/audit_click_bell_dynamic_region.py \
+  --sample center=/path/to/center/frame \
+  --sample left_edge=/path/to/left-edge/frame \
+  --sample right_edge=/path/to/right-edge/frame \
+  --camera cam_right_wrist \
+  --arm right \
+  --template /path/to/commissioned-click-bell-plan.json \
+  --backend-options /path/to/private-piper-click-bell.json \
+  --disable-workspace-check \
+  --output /path/to/click-bell-region-audit.json
+```
+
+The report contains localization quality and IK admission for each sample and always
+sets `motion_authorized: false`. Active Agent execution uses generic plans from fresh
+observations instead of consuming this report.
 
 ### Right-arm no-contact commissioning result (2026-10-30)
 
@@ -339,73 +400,59 @@ fire, so its status is `contact_unverified`. Visual operator evidence is still n
 to decide whether the yellow cap actually moved.
 
 The measured Piper settling behavior supports a 5 s waypoint timeout and 0.002 rad
-settling tolerance for this path. The first Agent capability is intentionally narrower
-than the operator runner: `click_bell_approach_preview` replays only the commissioned
-64-waypoint path to 60 mm clearance and its reverse retreat. It requires a live
-operator arming lease, permits one call per lease, and binds the plan, commissioning
-receipt, backend safety configuration, arm, distance, speed, and waypoint count. It
-does not contact the bell. Generic `piper_move_joint` remains disabled.
+settling tolerance for this commissioned path. The obsolete fixed-path Agent preview
+and task-specific MCP motion adapter are not part of the active contract. Generic
+`piper_move_joint` remains disabled for ClickBell; research uses tool-point
+`piper_plan_pose`, segmented `piper_execute_plan`, selectable `piper_retreat_plan`,
+`piper_hold`, and `piper_gripper`.
 
-### Agent approach-preview result (2026-10-30)
+### Generic Agent experiment and recording
 
-DeepSeek Harness completed the first end-to-end RAX-to-Piper motion trial through the
-task-specific MCP tool. It independently read the task and live contract, checked
-fresh robot status and the arming budget, called `click_bell_approach_preview {}` once,
-and reacquired status after the motion.
+Start a fresh operator-present DeepSeek Flash experiment with:
 
-- Session: `artifacts/sessions/20261030T081140Z_click_bell_6861b1/`
-- Commissioning report: `piper-agent-click-bell-preview.json`
-- Motion receipt: `piper-motion/agent_click_bell_preview_20261030T081337Z_18b2ee02.json`
-- Independent postcheck: `artifacts/probes/piper_readonly_20261030_agent_preview_postcheck.json`
-- Result: 64-waypoint right-arm approach to 60 mm clearance, reverse retreat passed,
-  final audited-start error `0.006475 rad`, no contact intended.
-- Postcondition: both arms remained ready and error-free, the one-call budget was
-  exhausted, and the runner automatically disarmed the session.
+```bash
+cd /home/edemlab/autorax_ws/autorax
+bash scripts/run_click_bell_experiment.sh
+```
 
-This confirms Agent-selected physical motion through the AutoRAX boundary. It does not
-confirm a bell press.
+The wrapper creates a fresh session from the private commissioned backend under
+`RAX_ARTIFACT_ROOT` and launches the normal Harness. Override it with
+`RAX_CLICK_BELL_BACKEND_OPTIONS` when commissioning evidence changes. There is no
+task-options file and no task-specific robot adapter.
 
-### Guarded-press Agent tool and recording (2026-10-30)
+When the Agent asks for visual confirmation, keep the first terminal running and use a
+second terminal. Pass either the printed session directory or its `operator-input.json`:
 
-The second task-specific motion tool is `click_bell_guarded_press`. It does not accept
-a target pose or motion parameter from the model. Startup validates hashes and
-semantics for the audited plan, the complete operator guarded-press receipt, the
-immediately preceding 5 mm no-contact receipt, and the active backend safety
-configuration. It requires a live arming lease, a closed gripper, fresh healthy
-feedback, and an initial pose within 0.01 rad of the audited start. One arming lease
-permits one call.
+```bash
+cd /home/edemlab/autorax_ws/autorax
+.venv/bin/python scripts/reply_operator.py \
+  --session /home/edemlab/autorax_ws/artifacts/sessions/SESSION/operator-input.json \
+  --result success \
+  --note "operator observed the button move down"
+```
 
-Every admitted attempt starts a session-owned episode recorder before any motion. It
-saves one MP4 per configured camera, aligned depth PNGs, before/after stills, camera
-timestamps, and measured joint/effort/speed/gripper samples under
-`<session>/recordings/<recording_id>/`. Recording failure does not interrupt the
-executor's retreat attempt, but it prevents the tool call from being accepted as a
-complete experiment.
+Use `--result failure` or `--result unclear` when appropriate. This command only
+answers the pending request and cannot move the robot.
 
-The paired `click_bell_set_gripper` tool accepts only `close` or `open`; it never
-accepts a numeric target from the model. Its width, 10 mm incremental step, effort,
-right-arm selection, feedback gates, and 0.002 rad arm-drift limit come from the passed
-close-and-restore characterization receipt. One arming lease enforces this state
-machine:
+The active robot tools are generic: `piper_observe`, `piper_pixel_to_position`,
+`piper_plan_pose`, `piper_execute_plan`, `piper_retreat_plan`, `piper_hold`, and
+`piper_gripper`. The Agent selects the live target, waypoint segment size, continuation
+decision, and retreat depth. A local executor performs each bounded segment and holds
+before returning control. In research mode the Agent may write and test a more capable
+controller, then promote it through the skill-library lifecycle; execution mode runs
+only frozen skills.
 
-1. `close` from the commissioned open width;
-2. one `click_bell_guarded_press` with confirmed reverse retreat;
-3. `open` back to the commissioned width.
+The Piper backend starts one session recorder before Agent work begins and stops it
+when the robot service closes. It saves one MP4 per configured camera, aligned depth
+PNGs, before/after stills, camera timestamps, and measured
+joint/effort/speed/gripper samples under `<session>/recordings/<recording_id>/`. This
+covers perception, planning delays, all motion segments, retreat, gripper actions, and
+the operator-confirmation period as one experiment.
 
-Opening before retreat, repeating either gripper action, switching arms, or changing
-the arming lease is rejected locally. Close and open each produce their own three-camera
-MP4/depth/telemetry recording, so a complete trial has three recording manifests:
-gripper close, press/retreat, and gripper open.
-
-After retreat and gripper opening, task success remains pending. The Agent must call
-`request_operator(kind="visual_confirmation")`; the human reply must begin with
-`success`, `failure`, or `unclear`. `click_bell_confirm_visual_result` verifies the
-durable operator request/reply pair and links the evaluation to the motion receipt and
-recording. Force, stall, sound, or the model's own interpretation cannot mark success.
-
-The first live DeepSeek Flash commissioning attempt reached all read-only prechecks,
-but the provider's final model request did not return, so it was interrupted before
-the press tool was called. Its MCP audit contains zero motion requests; the runner
-disarmed the session, and the independent five-sample postcheck passed with zero
-transmitted CAN frames. This is a harness/provider interruption, not a completed press
-experiment.
+After the attempt, the Agent calls
+`request_operator(kind="visual_confirmation")`; the reply begins with `success`,
+`failure`, or `unclear`. `scripts/run_task_experiment.py` reads that durable reply and
+passes it to the task manifest evaluator after the Harness exits. It also rejects a
+run that used any `click_bell_*` robot tool, lacks one passed complete-session
+recording, remained armed, or failed task evaluation. Force, stall, sound, or the
+model's interpretation cannot mark success.

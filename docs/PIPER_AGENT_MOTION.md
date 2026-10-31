@@ -28,7 +28,7 @@ Example operator configuration after characterizing right J1 positive:
   },
   "feedback_max_age_s": 0.25,
   "joint_limit_margin_rad": 0.02,
-  "max_joint_step_rad": 0.05,
+  "max_joint_step_rad": 0.25,
   "agent_motion": {
     "enabled": true,
     "allowed_moves": [
@@ -141,9 +141,42 @@ tools.
 The summary is written to `<session>/piper-agent-commissioning.json`; detailed robot
 evidence remains under `<session>/piper-motion/`.
 
-## Current limitation
+## Generic Cartesian plans
 
-The tool makes RAX capable of a characterized joint step, not a complete manipulation
-task. General task execution still needs separately characterized axes, gripper
-support, camera observations, task-level success detection, and a physical stop path
-appropriate to unattended operation.
+The independent `cartesian_motion` backend option exposes generic Cartesian motion
+without widening `piper_move_joint`. Every allowed arm needs configured workspace
+bounds and `link_min_z_m`:
+
+```json
+{
+  "workspace_bounds": {
+    "right": {
+      "min": [0.08, 0.01, 0.16],
+      "max": [0.37, 0.12, 0.26]
+    }
+  },
+  "link_min_z_m": 0.16,
+  "cartesian_motion": {
+    "enabled": true,
+    "allowed_arms": ["right"],
+    "speed_percent": 2,
+    "max_translation_m": 0.25,
+    "max_rotation_rad": 0.75,
+    "max_waypoints": 64,
+    "max_executions_per_arming": 10,
+    "plan_ttl_s": 120
+  }
+}
+```
+
+The Agent first calls `piper_plan_pose`. A passed plan returns `plan_id` only while the
+session is armed and all Cartesian admission checks pass. `piper_execute_plan` consumes
+that identifier, executes the checked waypoints, holds the measured endpoint, and
+writes a receipt. `piper_retreat_plan` reverses the same measured path once. Failed
+execution attempts hold and reverse reached waypoints when authorization remains
+valid.
+
+This is discrete Piper joint-position trajectory execution, not an impedance or
+high-rate Cartesian servo. It does not provide collision geometry, force control,
+contact semantics, homing, fault reset, motor enable, or a general gripper command.
+Those remain separate capabilities.

@@ -13,13 +13,14 @@ import pytest
 from services import arming
 from services.controller import operator
 from services.piper.camera import CameraFrame
-from services.piper.click_bell_press import (
+from services.piper.click_bell.press import (
     ClickBellPressController,
     ClickBellPressSettings,
 )
 from services.piper.episode_recording import (
     EpisodeRecordingSettings,
     MotionEpisodeRecorder,
+    TaskEpisodeRecorder,
 )
 from services.task_tools import task_tool_names
 from tasks.click_bell.outcome import ClickBellOutcomeController
@@ -236,6 +237,37 @@ def test_agent_executes_guarded_press_retreat_and_requires_visual_result(tmp_pat
         controller.validate_request()
 
 
+def test_dynamic_agent_press_executes_one_direct_approach(tmp_path):
+    root = tmp_path / "session"
+    arming.write(root, True, minutes=5, by="operator")
+    controller = ClickBellPressController(
+        root,
+        Reader(),
+        object(),
+        ("cam_high", "cam_right_wrist", "cam_left_wrist"),
+        settings(tmp_path),
+        EpisodeRecordingSettings(),
+        sleeper=lambda _: None,
+        recorder_factory=FakeRecorder,
+    )
+    plan = deepcopy(controller.settings.plan)
+    plan.update(
+        {
+            "dynamic": True,
+            "execution_admissible": True,
+            "plan_id": "0123456789ab",
+        }
+    )
+
+    result = controller.execute(plan)
+
+    receipt = json.loads(Path(result["receipt"]).read_text())
+    assert result["plan_id"] == plan["plan_id"]
+    assert receipt["admission"]["plan_mode"] == "dynamic"
+    assert receipt["plan_summary"]["prior_stage_evidence_required"] is False
+    assert "dynamic_no_contact_preflight" not in receipt
+
+
 def test_visual_result_requires_durable_operator_reply(tmp_path):
     root = tmp_path / "session"
     arming.write(root, True, minutes=5)
@@ -270,6 +302,29 @@ def test_tampered_guarded_press_evidence_is_rejected(tmp_path):
     receipt_path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError, match="does not admit"):
         ClickBellPressSettings.from_options(options, backend_options=backend)
+
+
+def test_guarded_press_can_disable_dynamic_workspace_check(tmp_path):
+    backend, options, _ = evidence(tmp_path)
+    options["dynamic_workspace_check"] = False
+
+    configured = ClickBellPressSettings.from_options(options, backend_options=backend)
+
+    assert configured.dynamic_workspace_check is False
+    assert configured.public()["dynamic_workspace_check"] is False
+
+
+def test_guarded_press_accepts_relaxed_real_robot_settle_tolerance(tmp_path):
+    backend, options, _ = evidence(tmp_path)
+    options["settle_tolerance_rad"] = 0.01
+
+    configured = ClickBellPressSettings.from_options(options, backend_options=backend)
+
+    assert configured.settle_tolerance_rad == pytest.approx(0.01)
+    assert configured.public()["settle_tolerance_rad"] == pytest.approx(0.01)
+    assert configured.public()["runtime_max_joint_step_rad"] == pytest.approx(
+        backend["max_joint_step_rad"]
+    )
 
 
 class FakeWriter:
@@ -343,29 +398,61 @@ def test_episode_recorder_saves_video_depth_and_robot_state(tmp_path):
     assert all(Path(path).is_file() for path in result["video"].values())
 
 
-def test_task_contract_lists_only_enabled_click_bell_motion_tools():
+def test_task_recorder_spans_multiple_motion_phases(tmp_path):
+    recorder = TaskEpisodeRecorder(
+        tmp_path,
+        FakeCameras(),
+        ("cam_high",),
+        EpisodeRecordingSettings(fps=1.0, save_depth=True),
+        recorder_factory=lambda *args, **kwargs: MotionEpisodeRecorder(
+            *args, cv2_module=FakeCv2(), **kwargs
+        ),
+    )
+    recorder.start()
+    recorder.mark("gripper_close_started", arm="right")
+    recorder.record_robot_sample(
+        "right",
+        {
+            "joints": np.zeros(6),
+            "effort": np.zeros(6),
+            "speed": np.zeros(6),
+            "gripper_width_m": 0.0,
+        },
+    )
+    recorder.mark("guarded_press_finished", status="contact_unverified")
+    recorder.mark("gripper_open_finished", arm="right")
+    result = recorder.stop()
+
+    assert result["status"] == "passed"
+    assert result["kind"] == "piper_task_episode_recording"
+    assert result["scope"] == "task"
+    assert [item["event"] for item in result["events"]] == [
+        "task_recording_started",
+        "gripper_close_started",
+        "guarded_press_finished",
+        "gripper_open_finished",
+        "task_recording_stopped",
+    ]
+    saved = json.loads(Path(result["manifest"]).read_text())
+    assert saved["kind"] == "piper_task_episode_recording"
+
+
+def test_task_contract_lists_only_enabled_click_bell_tools():
     names = task_tool_names(
         "click_bell",
+        robot="piper",
         task_options={"guarded_press": {"enabled": True}},
     )
-    assert names == (
-        "click_bell_localize_press_cap",
-        "click_bell_guarded_press",
-        "click_bell_confirm_visual_result",
-    )
+    assert names == ()
 
 
 def test_task_contract_lists_agent_gripper_before_press_when_enabled():
     names = task_tool_names(
         "click_bell",
+        robot="piper",
         task_options={
             "guarded_press": {"enabled": True},
             "gripper": {"enabled": True},
         },
     )
-    assert names == (
-        "click_bell_localize_press_cap",
-        "click_bell_set_gripper",
-        "click_bell_guarded_press",
-        "click_bell_confirm_visual_result",
-    )
+    assert names == ()

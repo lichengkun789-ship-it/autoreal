@@ -105,14 +105,15 @@ camera. The tool is read-only and is omitted when no camera has external calibra
 
 The backend can load operator-supplied extrinsics and perform pixel-to-base conversion.
 Calibration collection, solving, and held-out validation are provided by the Piper
-calibration scripts. Read-only numerical IK and straight Cartesian joint-path checks
-are available through `piper_plan_pose`; collision-aware planning, visual servoing, and
-commissioned Cartesian motion are not implemented yet. `tasks/click_bell/` contains one
+calibration scripts. Numerical IK and straight Cartesian joint-path checks are
+available through `piper_plan_pose`. When separately enabled by operator configuration,
+passed plans can be consumed by the generic Piper trajectory executor; collision-aware
+planning and visual servoing are not implemented. `tasks/click_bell/` contains one
 narrow, deterministic detector and robust depth-plane estimator for the yellow press
 cap above a blue bell. It is composed into ClickBell sessions as the read-only
 `click_bell_localize_press_cap` tool; it is not a general object detector. A localized
-surface or passed read-only plan is geometric evidence, not a safe Cartesian command.
+surface is geometric evidence; only a returned executable `plan_id` can be sent to the
+generic motion tool.
 
-Camera observation never enables motion. `agent_motion.enabled` remains an independent
-operator setting, and its current tool is still limited to an evidence-bound single
-joint step.
+Camera observation never enables motion. `agent_motion.enabled` and
+`cartesian_motion.enabled` remain independent operator settings.

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from services import arming
-from services.piper.click_bell_gripper import (
+from services.piper.click_bell.gripper import (
     ClickBellGripperController,
     ClickBellGripperSettings,
 )
@@ -167,7 +167,7 @@ def test_agent_closes_then_opens_only_after_matching_press_retreat(tmp_path):
 
     closed = gripper.execute("close")
     assert closed["phase"] == "closed"
-    assert closed["recording_detail"]["robot_samples"] > 0
+    assert closed["recording_detail"]["status"] == "recording"
     with pytest.raises(PermissionError, match="only after"):
         gripper.execute("open")
 
@@ -182,9 +182,12 @@ def test_agent_closes_then_opens_only_after_matching_press_retreat(tmp_path):
 
     assert opened["phase"] == "opened"
     assert opened["press_id"] == "a" * 12
+    assert opened["recording_detail"]["status"] == "passed"
+    assert opened["recording"] == closed["recording"]
     evidence_value = gripper.completed_task_evidence("a" * 12)
     assert [item["action"] for item in evidence_value["actions"]] == ["close", "open"]
-    assert len(evidence_value["recordings"]) == 2
+    assert evidence_value["recording"] == opened["recording"]
+    assert evidence_value["recording_detail"]["robot_samples"] > 0
     assert len(list((root / "piper-motion").glob("*.json"))) == 2
 
 
@@ -197,13 +200,17 @@ def test_agent_gripper_refuses_open_before_close_and_second_close(tmp_path):
         gripper.validate_request("close")
 
 
-def test_agent_close_refuses_to_count_an_already_closed_gripper(tmp_path):
+def test_agent_close_is_idempotent_when_gripper_is_already_closed(tmp_path):
     _, _, gripper = controller(tmp_path)
     right = gripper.reader.value["arms"]["right"]
     right["gripper_width_m"] = 0.0
     right["gripper"]["width_m"] = 0.0
-    with pytest.raises(PermissionError, match="requires start width"):
-        gripper.validate_request("close")
+
+    result = gripper.execute("close")
+
+    assert result["status"] == "passed"
+    assert result["phase"] == "closed"
+    assert result["final_width_m"] == pytest.approx(0.0)
 
 
 def test_tampered_gripper_commissioning_is_rejected(tmp_path):

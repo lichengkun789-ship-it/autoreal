@@ -21,6 +21,7 @@ import uuid
 
 from services.backends import make_backend
 from services.json_io import jsonable
+from services.skill_library import library_status, merge_workspace
 from .billing import reserve_cost
 from .config import Configuration
 from . import operator
@@ -30,6 +31,16 @@ from .session import Session
 from .timing import Timings
 
 PROTOCOL_VERSION = '2025-06-18'
+
+
+def _watch_owner(owner_pid, shutdown, *, getppid=os.getppid, terminate=None, interval=.25):
+    """Stop an orphaned robot service after its launcher process disappears."""
+    terminate = terminate or (lambda: os.kill(os.getpid(), signal.SIGTERM))
+    while not shutdown.wait(interval):
+        if getppid() != owner_pid:
+            shutdown.set()
+            terminate()
+            return
 
 
 def tool(name, description, properties=None, required=()):
@@ -76,6 +87,12 @@ GEMINI = {
         'reasoning': {'type': 'object', 'description': 'OpenRouter reasoning options: effort or max_tokens, optionally enabled/exclude.'},
     }},
 }
+SKILL_LIBRARY_MERGE = tool(
+    'skill_library_merge',
+    'Validate and merge committed changes from this research session skill-library branch '
+    'into the persistent library for this robot. Takes no arguments. Draft skills need '
+    'recorded evidence; verified skills need two unattended successful runs.',
+)
 
 
 class Frontend:
@@ -88,17 +105,25 @@ class Frontend:
         self.control_uncertain = False
         self._dispatch = threading.Lock()
         self._backend_tools = {t['name']: t for t in backend.tools()}
-        reserved = {'status', 'gemini_generate', 'request_operator'} & set(self._backend_tools)
+        reserved = {
+            'status',
+            'gemini_generate',
+            'request_operator',
+            'skill_library_merge',
+        } & set(self._backend_tools)
         if reserved:
             raise ValueError(f'Backend tools may not reuse harness tool names: {sorted(reserved)}')
 
     def tools(self):
-        return [STATUS, OPERATOR, *self._backend_tools.values(), *([GEMINI] if self.gemini else [])]
+        library = [SKILL_LIBRARY_MERGE] if self.s.config.agent_mode == 'research' else []
+        return [STATUS, OPERATOR, *library, *self._backend_tools.values(),
+                *([GEMINI] if self.gemini else [])]
 
     def status(self):
         config = self.s.config
         value = {'task': config.task, 'robot': config.robot, 'observation_profile': config.observation_profile,
-                 'control_uncertain': self.control_uncertain, 'api_budget': self.s.budget()}
+                 'agent_mode': config.agent_mode, 'control_uncertain': self.control_uncertain,
+                 'api_budget': self.s.budget(), 'skill_library': library_status(config)}
         if self.started_at is not None:
             value['session_seconds'] = config.session_seconds
             value['seconds_since_launch'] = round(time.time() - self.started_at, 1)
@@ -151,6 +176,11 @@ class Frontend:
                     except Exception as exc:
                         value['robot_status_error'] = public_failure(exc, operation='status')
                     images = []
+                elif name == 'skill_library_merge' and self.s.config.agent_mode == 'research':
+                    failure['stage'] = 'library_validation'
+                    if arguments:
+                        raise ValueError('skill_library_merge takes no arguments')
+                    value, images = merge_workspace(self.s.config), []
                 elif name == 'gemini_generate' and self.gemini:
                     value, images = self.gemini_call(arguments, failure)
                 elif name in self._backend_tools:
@@ -293,7 +323,11 @@ def main():
     parser.add_argument('--socket', type=Path, help='Serve this private Unix socket instead of stdio')
     parser.add_argument('--key-file', type=Path, help='OpenRouter key for gemini_generate (optional)')
     parser.add_argument('--started-at', type=float, help='Launch wall-clock start (epoch seconds)')
+    parser.add_argument('--owner-pid', type=int,
+                        help='Exit and release hardware if this launcher process disappears')
     args = parser.parse_args()
+    if args.owner_pid is not None and args.owner_pid <= 1:
+        parser.error('--owner-pid must be greater than 1')
     config = Configuration.load(args.config)
     key = load_key(args.key_file) if args.key_file else None
     session = Session(config)
@@ -303,9 +337,18 @@ def main():
         session.close()
         raise
     frontend = Frontend(session, backend, GeminiRouter(key) if key else None, started_at=args.started_at)
+    shutdown = threading.Event()
     def stop(*_):
+        shutdown.set()
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, stop)
+    if args.owner_pid is not None:
+        threading.Thread(
+            target=_watch_owner,
+            args=(args.owner_pid, shutdown),
+            name='robot-service-owner-watchdog',
+            daemon=True,
+        ).start()
     try:
         if args.socket:
             args.socket.unlink(missing_ok=True)
@@ -314,10 +357,11 @@ def main():
                 os.chmod(args.socket, 0o600)
                 listener.listen(16)
                 print(f'MCP listening on {args.socket}', flush=True)
-                frontend.serve_socket(listener)
+                frontend.serve_socket(listener, stop=shutdown)
         else:
             frontend.serve(sys.stdin, sys.stdout)
     finally:
+        shutdown.set()
         frontend.close()
         if args.socket:
             args.socket.unlink(missing_ok=True)

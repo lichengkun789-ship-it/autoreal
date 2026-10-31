@@ -3,31 +3,38 @@
 AutoRAX adapts [RAX](https://github.com/robot-agent-exploration/rax) to a dual-arm
 Piper robot while keeping the agent harness, hardware backend, and task definitions
 independent. The repository is intended to support multiple manipulation tasks; no
-task is built into the Piper driver.
+task is built into the task-neutral Piper backend. Tasks provide descriptions,
+perception strategies, evaluators, and reusable Agent skills, while robot motion stays
+in generic backend tools.
 
 The default backend remains intentionally **read-only**. RAX can connect to both Piper
 CAN interfaces, inspect measured state, reject stale or faulted feedback, dry-run
 absolute joint targets, and optionally capture configured RealSense RGB or RGB-D
 observations. An operator may opt a session into the evidence-bound `piper_move_joint`
-tool after a matching minimum-motion characterization. Task packages may additionally
-expose an operator-commissioned primitive without enabling generic joint control. The
-ClickBell package currently provides a fixed no-contact preview, an evidence-bound
-right-gripper close/open tool, and a fixed guarded press with reverse retreat. Each
-task phase records three-camera video and robot telemetry, and task success requires
-human visual confirmation. Homing, enable, reset, and general Cartesian or trajectory
-control remain unavailable to the Agent.
+tool after a matching minimum-motion characterization. A separately configured
+`cartesian_motion` capability turns passed `piper_plan_pose` results into one-shot
+`piper_execute_plan` and `piper_retreat_plan` transactions with arming, live-feedback,
+workspace, link-height, joint-limit, hold, recovery, and receipt checks. Execution and
+retreat may be split into caller-selected waypoint segments, returning control to the
+Agent between segments. `piper_hold` latches measured state, and `piper_gripper`
+provides commissioned task-independent open/close/move actions. The configured Piper
+tool point comes from robot geometry rather than task code. A complete session records
+one continuous three-camera episode plus robot telemetry, and ClickBell success still
+requires human visual confirmation. Homing, enable, reset, impedance, and general
+force control remain unavailable to the Agent.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
 | `services/controller/` | Robot-neutral MCP dispatch, sessions, budgets, and audit logs |
-| `services/piper/` | Piper SDK adapter, RealSense capture, state normalization, and safety validation |
+| `services/piper/` | Task-neutral Piper state, geometry, motion, gripper, recording, and receipts |
 | `services/perception/` | Robot-independent camera geometry used by backends and task perception |
 | `harness/` | Agent selection plus isolated Claude Code and DeepSeek Harness adapters |
 | `agent_skills/` | Capability-specific instructions installed into an agent workspace |
 | `auto_research_agent/` | Generated workspace template and stable Python runtime API |
 | `tasks/` | Task packages: goal, reset procedure, evaluator, and tests |
+| external `skill-library/<robot>/` | Git-backed executable skills shared across sessions |
 | `examples/` | Operator-owned configuration examples with no secrets |
 | `docs/` | Architecture, component boundaries, upstream relationship, and bring-up gates |
 | `local_tests/` | Hardware-free unit tests; real-hardware tests must use the `hardware` marker |
@@ -81,6 +88,14 @@ key file outside the checkout. See [docs/AGENT_HARNESSES.md](docs/AGENT_HARNESSE
 for installation, credential handling, `prepare-only` validation, and launch commands.
 Changing the harness does not change the Piper tool set or enable motion.
 
+### Research and execution
+
+Every configuration declares `--agent-mode research` or `--agent-mode execution`.
+Research sessions can write and run sandboxed Python, and receive a branch of the
+persistent robot skill library. Execution sessions mount the workspace read-only and
+check out a detached skill-library commit so evaluation cannot patch the procedure.
+See [docs/AUTORESEARCH_WORKFLOW.md](docs/AUTORESEARCH_WORKFLOW.md).
+
 ## Read-only Piper session
 
 1. Copy `examples/piper.json` outside the repository and set the real CAN interface
@@ -104,8 +119,10 @@ python scripts/configure_session.py \
 bash scripts/start_agent.sh --config /path/to/operator-input.json
 ```
 
-With the example's default `agent_motion.enabled: false`, the base Piper tools are
-`piper_status`, `piper_observe`, and `piper_check_joints`.
+With the example's default `agent_motion.enabled: false` and
+`cartesian_motion.enabled: false`, the base Piper tools are read-only. Enable the two
+motion capabilities independently; generic Cartesian execution additionally requires
+configured workspace bounds and a distal-link minimum height for every allowed arm.
 `piper_check_joints` is a dry run: an accepted result never means a command was sent.
 
 ### Optional RealSense observation
@@ -191,9 +208,10 @@ direction, delta, and speed to the optional Agent tool; see
 Copy `tasks/_template/` to `tasks/<task_id>/`. Keep robot-independent success criteria
 in `evaluator.py`, task wording in `TASK.md`, and human reset instructions in
 `RESET.md`. Perception should use robot-independent helpers under `services/perception/`.
-If a task needs a commissioned robot primitive, keep SDK commands in `services/piper/`
-and expose only a narrow adapter from `tasks/<task_id>/tools.py`; task code must never
-import `piper_sdk` directly.
+Add a task-specific robot adapter only when the hardware behavior cannot be expressed
+by existing generic robot tools. `services/task_tools.py` loads such adapters from a
+manifest without task-name branches, but ClickBell intentionally uses none. Task
+packages must not import robot backends, arming code, or hardware limits.
 
 ## Motion gate
 
@@ -213,15 +231,25 @@ model's tool choice, and always disarms the session when the launcher exits. See
 for the operator-present workflow. This verifies Agent tool selection; it does not
 expand the backend into general manipulation control.
 
-ClickBell follows the same boundary at task scope. `click_bell_guarded_press` can only
-replay the exact operator-commissioned plan and settings, once per arming lease. It
-is paired with `click_bell_set_gripper`, which admits only the commissioned
-`close -> press/retreat -> open` sequence. The three physical phases record MP4 video
-from every configured camera, aligned depth frames, before/after stills, and
-joint/effort/speed/gripper telemetry under the external session root. After retreat
-and gripper opening, `click_bell_confirm_visual_result` accepts only a durable reply from
-`request_operator(kind="visual_confirmation")`; contact effort alone is never treated
-as task success. See [docs/CLICK_BELL.md](docs/CLICK_BELL.md).
+ClickBell is now a task Skill composed from `piper_observe`,
+`piper_pixel_to_position`, `piper_plan_pose`, segmented `piper_execute_plan`,
+`piper_retreat_plan`, `piper_hold`, and `piper_gripper`. The Agent chooses when to
+continue, how many waypoints to retreat, and whether a failed strategy should be
+replanned or revised into a research-mode controller. The backend records MP4 video,
+aligned depth, stills, and joint/effort/speed/gripper telemetry for the complete
+session. `request_operator(kind="visual_confirmation")` remains the success signal;
+motion or contact effort alone is never proof of success. See
+[docs/CLICK_BELL.md](docs/CLICK_BELL.md).
+
+Run the canonical operator-present experiment with:
+
+```bash
+bash scripts/run_click_bell_experiment.sh
+```
+
+The wrapper creates a normal AutoRAX session and starts the selected Harness. DeepSeek
+receives the task description and installed ClickBell Skill, then chooses among the MCP
+tools; the wrapper does not directly script robot actions.
 
 ## License
 

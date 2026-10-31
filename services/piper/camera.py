@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import threading
 import time
 from typing import Any, Iterable
 
@@ -144,12 +145,17 @@ class RealSenseRig:
         self._pipelines: dict[str, Any] = {}
         self._aligners: dict[str, Any] = {}
         self._depth_scales: dict[str, float] = {}
+        self._lock = threading.RLock()
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(spec.name for spec in self.specs)
 
     def start(self) -> None:
+        with self._lock:
+            self._start()
+
+    def _start(self) -> None:
         if self._pipelines:
             return
         rs = self.rs or require_realsense()
@@ -174,8 +180,10 @@ class RealSenseRig:
                         rs.format.z16,
                         self.fps,
                     )
-                profile = pipeline.start(config)
+                # pipeline.start() may acquire the USB device before raising. Track it
+                # first so the exception path can always release that partial start.
                 self._pipelines[spec.name] = pipeline
+                profile = pipeline.start(config)
                 if self.depth:
                     self._aligners[spec.name] = rs.align(rs.stream.color)
                     sensor = profile.get_device().first_depth_sensor()
@@ -203,6 +211,15 @@ class RealSenseRig:
         }
 
     def capture(
+        self,
+        names: Iterable[str] | None = None,
+        *,
+        timeout_ms: int = 3000,
+    ) -> dict[str, CameraFrame]:
+        with self._lock:
+            return self._capture(names, timeout_ms=timeout_ms)
+
+    def _capture(
         self,
         names: Iterable[str] | None = None,
         *,
@@ -259,6 +276,10 @@ class RealSenseRig:
         return frames
 
     def close(self) -> None:
+        with self._lock:
+            self._close()
+
+    def _close(self) -> None:
         pipelines = list(self._pipelines.values())
         self._pipelines.clear()
         self._aligners.clear()

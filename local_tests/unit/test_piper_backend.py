@@ -95,6 +95,42 @@ class FakeCameras:
         self.closed = True
 
 
+class FakeCartesianController:
+    def __init__(self):
+        self.staged = []
+        self.validated = []
+
+    def stage(self, plan, *, arm):
+        self.staged.append((plan, arm))
+        return {
+            "plan_id": "0123456789ab",
+            "execution_admissible": True,
+            "expires_unix": 200.0,
+            "plan_receipt": "/tmp/plan.json",
+        }
+
+    def validate_execute(self, plan_id, waypoints=None):
+        self.validated.append(("execute", plan_id, waypoints))
+
+    def validate_retreat(self, plan_id, waypoints=None):
+        self.validated.append(("retreat", plan_id, waypoints))
+
+    def discard(self, plan_id):
+        return {"status": "passed", "discarded": True, "plan_id": plan_id}
+
+    def execute(self, plan_id, *, waypoint_count=None):
+        return {"executed": True, "plan_id": plan_id, "waypoints": waypoint_count}
+
+    def retreat(self, plan_id, *, waypoint_count=None):
+        return {"retreated": True, "plan_id": plan_id, "waypoints": waypoint_count}
+
+    def hold(self, arm):
+        return {"status": "passed", "arm": arm}
+
+    def status(self):
+        return {"enabled": True, "plans": []}
+
+
 def test_tools_are_read_only_and_status_requires_fresh_healthy_feedback():
     backend = PiperBackend(config(), reader=FakeReader())
     assert backend.mutating == frozenset()
@@ -133,7 +169,7 @@ def test_joint_check_accepts_small_valid_target_and_rejects_limits_and_steps():
     assert not value["accepted"]
     assert "outside_joint_limit_margin" in value["joints"][1]["reasons"]
 
-    large_step = [0.2, 0.2, -0.2, 0.0, 0.0, 0.0]
+    large_step = [0.3, 0.2, -0.2, 0.0, 0.0, 0.0]
     value, _ = backend.call("piper_check_joints", {"arm": "right", "positions": large_step})
     assert not value["accepted"]
     assert "per_call_step_exceeded" in value["joints"][0]["reasons"]
@@ -169,7 +205,7 @@ def test_pose_plan_is_read_only_and_uses_fresh_measured_joints():
     assert value["frame"] == "piper_right_base"
     assert value["state_ready"] is True
     assert value["checks"]["workspace_bounds"] is False
-    assert "cannot authorize motion" in value["warnings"][0]
+    assert "Cartesian position is unchecked" in value["warnings"][0]
     assert backend.mutating == frozenset()
 
 
@@ -193,6 +229,85 @@ def test_pose_plan_uses_operator_workspace_bounds():
     assert value["checks"]["workspace_bounds"] is True
     assert value["checks"]["distal_link_min_z"] is True
     assert value["warnings"] == []
+
+
+def test_enabled_cartesian_backend_stages_executes_and_retreats_plan(tmp_path):
+    bounds = {
+        "right": {"min": [-1.0, -1.0, -1.0], "max": [1.0, 1.0, 1.0]},
+    }
+    controller = FakeCartesianController()
+    backend = PiperBackend(
+        config(
+            root=tmp_path,
+            arms={"left": {}, "right": {}},
+            workspace_bounds=bounds,
+            link_min_z_m=-1.0,
+            cartesian_motion={"enabled": True, "allowed_arms": ["right"]},
+        ),
+        reader=FakeReader(),
+        cartesian_controller=controller,
+    )
+    names = [tool["name"] for tool in backend.tools()]
+    assert "piper_execute_plan" in names
+    assert "piper_retreat_plan" in names
+    assert "piper_discard_plan" in names
+    assert "piper_hold" in names
+    assert backend.mutating == frozenset(
+        {"piper_execute_plan", "piper_retreat_plan", "piper_hold"}
+    )
+
+    current = arm_state()["joints_rad"]
+    target = end_transform(current)[:3, 3] + [0.002, 0.0, 0.0]
+    plan, _ = backend.call(
+        "piper_plan_pose",
+        {"arm": "right", "position_m": target.tolist(), "waypoints": 4},
+    )
+    assert plan["execution_admissible"] is True
+    assert plan["plan_id"] == "0123456789ab"
+    assert controller.staged[0][1] == "right"
+
+    executed, _ = backend.call(
+        "piper_execute_plan", {"plan_id": plan["plan_id"], "waypoints": 2}
+    )
+    retreated, _ = backend.call(
+        "piper_retreat_plan", {"plan_id": plan["plan_id"], "waypoints": 1}
+    )
+    discarded, _ = backend.call("piper_discard_plan", {"plan_id": plan["plan_id"]})
+    held, _ = backend.call("piper_hold", {"arm": "right"})
+    assert executed["executed"] is True
+    assert executed["waypoints"] == 2
+    assert retreated["retreated"] is True
+    assert retreated["waypoints"] == 1
+    assert discarded["discarded"] is True
+    assert held["status"] == "passed"
+
+
+def test_cartesian_backend_can_explicitly_skip_workspace_checks(tmp_path):
+    controller = FakeCartesianController()
+    backend = PiperBackend(
+        config(
+            root=tmp_path,
+            arms={"left": {}, "right": {}},
+            workspace_bounds=None,
+            link_min_z_m=None,
+            cartesian_motion={
+                "enabled": True,
+                "allowed_arms": ["right"],
+                "require_workspace_checks": False,
+            },
+        ),
+        reader=FakeReader(),
+        cartesian_controller=controller,
+    )
+    current = arm_state()["joints_rad"]
+    target = end_transform(current)[:3, 3] + [0.002, 0.0, 0.0]
+    plan, _ = backend.call(
+        "piper_plan_pose",
+        {"arm": "right", "position_m": target.tolist(), "waypoints": 4},
+    )
+    assert plan["checks"]["workspace_bounds"] is False
+    assert plan["checks"]["distal_link_min_z"] is False
+    assert plan["execution_admissible"] is True
 
 
 def test_workspace_bounds_can_be_commissioned_per_arm():

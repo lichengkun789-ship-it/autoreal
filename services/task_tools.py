@@ -1,45 +1,60 @@
-"""Compose optional task-owned MCP tools around a robot backend."""
+"""Compose manifest-registered task tools around a robot backend."""
 
-from importlib import import_module
+from services.task_manifest import adapter_class, adapter_target
 
 
-TASK_TOOLSETS = {
-    "click_bell": "tasks.click_bell.tools:ClickBellTools",
-}
+def registered_task_adapters() -> dict[tuple[str, str], str]:
+    """Return configured adapters for architecture checks and diagnostics."""
+    from pathlib import Path
+    import json
+
+    result = {}
+    services = Path(__file__).resolve().parent
+    for path in services.glob("*/task_adapters.json"):
+        robot = path.parent.name
+        value = json.loads(path.read_text())
+        for task, target in value.get("tasks", {}).items():
+            result[(robot, task)] = target
+    return result
+
+
+TASK_TOOLSETS = registered_task_adapters()
 
 
 def task_tool_names(
     task: str | None,
     *,
-    motion_enabled: bool = False,
+    robot: str,
     task_options: dict | None = None,
 ) -> tuple[str, ...]:
-    if task == "click_bell":
-        names = ["click_bell_localize_press_cap"]
-        options = task_options if isinstance(task_options, dict) else {}
-        preview = options.get("motion") if options else None
-        press = options.get("guarded_press") if options else None
-        gripper = options.get("gripper") if options else None
-        if (
-            isinstance(preview, dict) and preview.get("enabled") is True
-        ) or (motion_enabled and not options):
-            names.append("click_bell_approach_preview")
-        if isinstance(press, dict) and press.get("enabled") is True:
-            if isinstance(gripper, dict) and gripper.get("enabled") is True:
-                names.append("click_bell_set_gripper")
-            names.extend(
-                ["click_bell_guarded_press", "click_bell_confirm_visual_result"]
-            )
-        return tuple(names)
-    return ()
+    if task is None:
+        return ()
+    adapter = adapter_class(robot, task)
+    if adapter is None:
+        return ()
+    description = adapter.describe_options(task_options or {})
+    return tuple(description["tools"])
+
+
+def task_motion_tool_names(
+    task: str | None,
+    *,
+    robot: str,
+    task_options: dict | None = None,
+) -> tuple[str, ...]:
+    if task is None:
+        return ()
+    adapter = adapter_class(robot, task)
+    if adapter is None:
+        return ()
+    description = adapter.describe_options(task_options or {})
+    return tuple(description["motion_tools"])
 
 
 def _toolset(config, backend):
-    target = TASK_TOOLSETS.get(config.task)
-    if target is None:
+    if adapter_target(config.robot, config.task) is None:
         return None
-    module, _, attribute = target.partition(":")
-    return getattr(import_module(module), attribute)(config, backend=backend)
+    return adapter_class(config.robot, config.task)(config, backend=backend)
 
 
 class BackendWithTaskTools:

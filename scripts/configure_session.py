@@ -16,7 +16,14 @@ import secrets
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from services.controller.config import AGENT_CLIS, AGENT_EFFORTS, PROFILES, PROVIDERS, Configuration  # noqa: E402
+from services.controller.config import (  # noqa: E402
+    AGENT_CLIS,
+    AGENT_EFFORTS,
+    AGENT_MODES,
+    PROFILES,
+    PROVIDERS,
+    Configuration,
+)
 from services.storage_root import artifact_root  # noqa: E402
 
 
@@ -36,6 +43,8 @@ def main():
                         help='Provider for the selected harness (default: claude-login or deepseek-api)')
     parser.add_argument('--agent-effort', choices=AGENT_EFFORTS, default='xhigh')
     parser.add_argument('--agent-model')
+    parser.add_argument('--agent-mode', choices=AGENT_MODES, default='research',
+                        help='research lets the Agent write/test code; execution is read-only')
     parser.add_argument('--session-hours', type=float, default=4.0)
     parser.add_argument('--max-model-calls', type=int, default=4000)
     parser.add_argument('--subagents', type=int, default=0)
@@ -55,7 +64,7 @@ def main():
         root=root, task=args.task, task_description=description, robot=args.robot,
         backend_options=options, task_options=task_options,
         observation_profile=args.observation_profile, agent_cli=args.agent_cli, agent_provider=provider,
-        agent_effort=args.agent_effort, agent_model=args.agent_model,
+        agent_effort=args.agent_effort, agent_model=args.agent_model, agent_mode=args.agent_mode,
         session_seconds=int(args.session_hours * 3600), max_model_calls=args.max_model_calls,
         subagents=args.subagents)
     root.mkdir(parents=True, mode=0o700)

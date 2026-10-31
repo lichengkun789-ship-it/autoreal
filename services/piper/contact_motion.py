@@ -15,10 +15,12 @@ import time
 
 import numpy as np
 
-from .hold import PiperJointCommandAdapter
 from .effort_characterization import effort_statistics
-from .minimum_motion import _enabled
-from .safety import validate_joint_target
+from .safety import DEFAULT_MAX_JOINT_STEP_RAD
+from .trajectory import (
+    PIPER_ZERO_FEEDBACK_DEADBAND_RAD,
+    PiperJointTrajectoryExecutor,
+)
 
 
 def _utc_now() -> str:
@@ -41,7 +43,7 @@ class ContactStopSettings:
     max_start_error_rad: float = 0.01
     max_contact_gripper_opening_m: float = 0.005
     joint_margin_rad: float = 0.02
-    max_joint_step_rad: float = 0.05
+    max_joint_step_rad: float = DEFAULT_MAX_JOINT_STEP_RAD
 
     def __post_init__(self):
         positive = (
@@ -70,7 +72,7 @@ class ContactStopSettings:
             raise ValueError("joint_margin_rad must be non-negative")
 
 
-class PiperGuardedPressExecutor:
+class PiperGuardedPressExecutor(PiperJointTrajectoryExecutor):
     """Execute one admitted press plan and always attempt a measured hold."""
 
     def __init__(
@@ -81,13 +83,8 @@ class PiperGuardedPressExecutor:
         sleeper=time.sleep,
         sample_observer=None,
     ):
-        self.reader = reader
-        self.settings = settings
-        self.sleeper = sleeper
+        super().__init__(reader, settings, sleeper=sleeper)
         self.sample_observer = sample_observer
-        self.commander = PiperJointCommandAdapter(
-            reader.interfaces, speed_percent=settings.speed_percent
-        )
 
     def _record_sample(self, side: str, state: dict) -> None:
         if self.sample_observer is not None:
@@ -119,32 +116,6 @@ class PiperGuardedPressExecutor:
             "speed": speed,
             "gripper_width_m": gripper,
         }
-
-    def _wait_for_arm_state(self, side: str) -> dict:
-        deadline = time.monotonic() + 3.0
-        last_error = None
-        while True:
-            try:
-                return self._arm_state(self.reader.snapshot(), side)
-            except ValueError as exc:
-                if "stale or missing" not in str(exc) and "snapshot has no" not in str(exc):
-                    raise
-                last_error = exc
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Piper feedback did not become ready: {last_error}"
-                ) from last_error
-            self.sleeper(self.settings.poll_interval_s)
-
-    def _wait_for_enabled(self, side: str) -> bool:
-        deadline = time.monotonic() + 3.0
-        while True:
-            enabled = _enabled(self.reader.interfaces[side])
-            if enabled is not None:
-                return enabled
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"{side} motor enable feedback did not become complete")
-            self.sleeper(self.settings.poll_interval_s)
 
     def _validated_plan(
         self, plan: dict, side: str
@@ -214,21 +185,6 @@ class PiperGuardedPressExecutor:
                 "guarded contact requires the immediately previous passed no-contact stage receipt"
             )
 
-    def _command(self, side: str, current: np.ndarray, target: list[float]) -> tuple[int, ...]:
-        report = validate_joint_target(
-            current.tolist(),
-            target,
-            margin_rad=self.settings.joint_margin_rad,
-            max_step_rad=self.settings.max_joint_step_rad,
-        )
-        if not report["accepted"]:
-            reasons = [
-                f"J{row['joint']}:{'/'.join(row['reasons'])}"
-                for row in report["violations"]
-            ]
-            raise ValueError("runtime waypoint rejected: " + ", ".join(reasons))
-        return self.commander.command_position(side, target)
-
     def _wait_target(
         self,
         side: str,
@@ -245,7 +201,14 @@ class PiperGuardedPressExecutor:
             authorization_guard()
             state = self._arm_state(self.reader.snapshot(), side)
             self._record_sample(side, state)
-            error = float(np.max(np.abs(state["joints"] - target)))
+            target_array = np.asarray(target, dtype=np.float64)
+            joint_errors = np.abs(state["joints"] - target_array)
+            zero_deadband = np.logical_and(
+                np.abs(state["joints"]) <= self.settings.settle_tolerance_rad,
+                np.abs(target_array) <= PIPER_ZERO_FEEDBACK_DEADBAND_RAD,
+            )
+            settle_error = float(np.max(np.where(zero_deadband, 0.0, joint_errors)))
+            error = float(np.max(joint_errors))
             samples.append(
                 {
                     "joints_rad": state["joints"].tolist(),
@@ -254,11 +217,15 @@ class PiperGuardedPressExecutor:
                     "tracking_error_rad": error,
                 }
             )
-            if error <= self.settings.settle_tolerance_rad:
+            if settle_error <= self.settings.settle_tolerance_rad:
                 return {
                     "outcome": "reached",
                     "state": state,
                     "tracking_error_rad": error,
+                    "settle_error_rad": settle_error,
+                    "zero_deadband_joints": [
+                        index + 1 for index, used in enumerate(zero_deadband) if used
+                    ],
                     "samples": samples,
                 }
 
@@ -582,9 +549,110 @@ class PiperGuardedPressExecutor:
             receipt["finished_at"] = _utc_now()
         return receipt
 
-    def _hold_measured(self, side: str, state: dict) -> dict:
-        native = self.commander.command_position(side, state["joints"].tolist())
-        return {"target_joints_rad": state["joints"].tolist(), "native_command": list(native)}
+    def recover_along_path(
+        self,
+        path,
+        *,
+        arm: str,
+        operator_lease_id: str,
+        execute: bool,
+        authorization_guard,
+    ) -> dict:
+        """Retrace an admitted joint path from the nearest measured waypoint."""
+        receipt = {
+            "schema_version": 1,
+            "kind": "piper_operator_path_recovery",
+            "status": "failed",
+            "started_at": _utc_now(),
+            "arm": arm,
+            "agent_tool_exposed": False,
+            "motion_command_attempted": False,
+        }
+        try:
+            if arm not in ("left", "right"):
+                raise ValueError("arm must be left or right")
+            points = np.asarray(tuple(path), dtype=np.float64)
+            if points.ndim != 2 or points.shape[1:] != (6,) or len(points) < 2:
+                raise ValueError("recovery requires at least two six-joint path points")
+            if not np.all(np.isfinite(points)):
+                raise ValueError("recovery path joints must be finite")
+            if not isinstance(operator_lease_id, str) or not operator_lease_id.strip():
+                raise PermissionError("a fresh operator lease id is required")
+            if execute and not callable(authorization_guard):
+                raise PermissionError("an operator authorization guard is required")
+
+            state = self._wait_for_arm_state(arm)
+            distances = np.max(np.abs(points - state["joints"]), axis=1)
+            anchor_index = int(np.argmin(distances))
+            anchor_error = float(distances[anchor_index])
+            receipt.update(
+                {
+                    "path_points": len(points),
+                    "anchor_index": anchor_index,
+                    "anchor_error_rad": anchor_error,
+                    "initial_joints_rad": state["joints"].tolist(),
+                    "target_joints_rad": points[0].tolist(),
+                }
+            )
+            if anchor_error > self.settings.max_start_error_rad:
+                raise ValueError(
+                    "live joints do not match the interrupted recovery path "
+                    f"({anchor_error:.6f} > {self.settings.max_start_error_rad:.6f} rad)"
+                )
+            if not execute:
+                receipt["status"] = "planned"
+                receipt["reverse_waypoints"] = anchor_index
+                return receipt
+
+            authorization_guard()
+            if self._wait_for_enabled(arm) is not True:
+                raise PermissionError(f"{arm} arm does not report all motors enabled")
+            rows = []
+            for target in reversed(points[:anchor_index]):
+                authorization_guard()
+                current = self._arm_state(self.reader.snapshot(), arm)
+                receipt["motion_command_attempted"] = True
+                native = self._command(arm, current["joints"], target.tolist())
+                result = self._wait_target(
+                    arm,
+                    target.tolist(),
+                    contact_baseline=None,
+                    authorization_guard=authorization_guard,
+                )
+                rows.append(
+                    {
+                        "target_joints_rad": target.tolist(),
+                        "native_command": list(native),
+                        "tracking_error_rad": result["tracking_error_rad"],
+                    }
+                )
+            final = self._arm_state(self.reader.snapshot(), arm)
+            final_error = float(np.max(np.abs(final["joints"] - points[0])))
+            receipt.update(
+                {
+                    "reverse_waypoints": len(rows),
+                    "waypoints": rows,
+                    "final_start_error_rad": final_error,
+                    "final_hold": self._hold_measured(arm, final),
+                    "final_joints_rad": final["joints"].tolist(),
+                }
+            )
+            if final_error > self.settings.max_start_error_rad:
+                raise RuntimeError("path recovery did not return near the observation pose")
+            receipt["status"] = "passed"
+        except BaseException as exc:
+            receipt.setdefault("failure_reasons", []).append(f"{type(exc).__name__}: {exc}")
+            if execute and receipt["motion_command_attempted"]:
+                try:
+                    state = self._arm_state(self.reader.snapshot(), arm)
+                    receipt["failure_hold"] = self._hold_measured(arm, state)
+                except BaseException as hold_exc:
+                    receipt.setdefault("failure_reasons", []).append(
+                        f"hold failed: {type(hold_exc).__name__}: {hold_exc}"
+                    )
+        finally:
+            receipt["finished_at"] = _utc_now()
+        return receipt
 
     def run(
         self,
@@ -595,6 +663,7 @@ class PiperGuardedPressExecutor:
         execute: bool,
         authorization_guard,
         prior_stage_receipt: dict | None = None,
+        require_prior_stage_evidence: bool = True,
     ) -> dict:
         receipt = {
             "schema_version": 1,
@@ -607,6 +676,7 @@ class PiperGuardedPressExecutor:
             "motion_command_attempted": False,
             "retreat_attempted": False,
         }
+        reached = []
         try:
             if arm not in ("left", "right"):
                 raise ValueError("arm must be left or right")
@@ -614,12 +684,15 @@ class PiperGuardedPressExecutor:
                 raise PermissionError("a fresh operator lease id is required")
             if execute and not callable(authorization_guard):
                 raise PermissionError("an operator authorization guard is required")
+            if type(require_prior_stage_evidence) is not bool:
+                raise ValueError("require_prior_stage_evidence must be true or false")
             expected_start, approach, contact = self._validated_plan(plan, arm)
             receipt["plan_summary"] = {
                 "frame_id": plan.get("frame_id"),
                 "approach_waypoints": len(approach),
                 "contact_waypoints": len(contact),
                 "contact_travel_m": float(plan["stages"][-2]["approach_distance_m"]),
+                "prior_stage_evidence_required": require_prior_stage_evidence,
             }
             if not execute:
                 receipt["status"] = "planned"
@@ -635,9 +708,10 @@ class PiperGuardedPressExecutor:
                     f"{self.settings.max_contact_gripper_opening_m:.4f} m; measured "
                     f"{initial['gripper_width_m']:.4f} m"
                 )
-            self._validate_contact_stage_evidence(
-                plan, arm, prior_stage_receipt, len(approach)
-            )
+            if require_prior_stage_evidence:
+                self._validate_contact_stage_evidence(
+                    plan, arm, prior_stage_receipt, len(approach)
+                )
             start_error = float(np.max(np.abs(initial["joints"] - expected_start)))
             receipt["start_state_error_rad"] = start_error
             if start_error > self.settings.max_start_error_rad:
@@ -705,9 +779,38 @@ class PiperGuardedPressExecutor:
                 try:
                     state = self._arm_state(self.reader.snapshot(), arm)
                     receipt["failure_hold"] = self._hold_measured(arm, state)
+                    if reached and not receipt["retreat_attempted"]:
+                        receipt["retreat_attempted"] = True
+                        retreat_rows = []
+                        for target in reversed(reached):
+                            authorization_guard()
+                            current = self._arm_state(self.reader.snapshot(), arm)
+                            native = self._command(arm, current["joints"], target)
+                            result = self._wait_target(
+                                arm,
+                                target,
+                                contact_baseline=None,
+                                authorization_guard=authorization_guard,
+                            )
+                            retreat_rows.append(
+                                {
+                                    "target_joints_rad": target,
+                                    "native_command": list(native),
+                                    "tracking_error_rad": result["tracking_error_rad"],
+                                }
+                            )
+                        receipt["retreat"] = {
+                            "status": "passed",
+                            "waypoints": retreat_rows,
+                            "reason": "automatic recovery after interrupted execution",
+                        }
                 except BaseException as hold_exc:
+                    receipt["retreat"] = {
+                        "status": "failed",
+                        "reason": f"{type(hold_exc).__name__}: {hold_exc}",
+                    }
                     receipt.setdefault("failure_reasons", []).append(
-                        f"hold failed: {type(hold_exc).__name__}: {hold_exc}"
+                        f"recovery failed: {type(hold_exc).__name__}: {hold_exc}"
                     )
         finally:
             receipt["finished_at"] = _utc_now()

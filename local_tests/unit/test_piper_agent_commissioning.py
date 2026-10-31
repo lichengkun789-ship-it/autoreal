@@ -5,7 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from services import arming
-from scripts.run_piper_agent_test import _launcher_command, run_trial
+from harness.operator import launcher_command
+from scripts.run_piper_agent_test import run_trial
 from tasks.piper_agent_joint_step.evaluator import EXPECTED_ARGUMENTS, evaluate
 
 
@@ -43,7 +44,7 @@ def test_trial_arms_only_around_launcher_and_disarms_after_success(tmp_path):
 
     def fake_launcher(command, cwd):
         assert arming.read(root)["armed"] is True
-        assert command[-3:] == ["--non-interactive", "--no-gemini", "--disable-shell"]
+        assert command[-2:] == ["--non-interactive", "--no-gemini"]
         (root / "mcp.jsonl").write_text(json.dumps({
             "time": 1.0,
             "event": "mcp_request",
@@ -94,8 +95,8 @@ def test_trial_disarms_when_launcher_fails(tmp_path):
 
 def test_shell_is_disabled_only_for_deepseek_commissioning(tmp_path):
     config_path = tmp_path / "operator-input.json"
-    dsh = _launcher_command(SimpleNamespace(agent_cli="dsh"), config_path, None)
-    claude = _launcher_command(SimpleNamespace(agent_cli="claude"), config_path, None)
+    dsh = launcher_command(SimpleNamespace(agent_cli="dsh", agent_mode="research"), config_path, None)
+    claude = launcher_command(SimpleNamespace(agent_cli="claude", agent_mode="research"), config_path, None)
 
-    assert "--disable-shell" in dsh
+    assert "--disable-shell" not in dsh
     assert "--disable-shell" not in claude

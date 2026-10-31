@@ -5,12 +5,12 @@ description: Save successful {{ robot.name }} action tips and retrieve them for 
 
 # Experience memory
 
-Memory under `{{ vocab.memory }}/` belongs to this task and persists across sessions.
-Retrieve matching tips when controlling the robot or building automation. At start or
-after compaction, read `{{ vocab.memory }}/INDEX.md` if present and retrieve only
-matching learned skills. Open linked evidence when applicability or outcome is
-uncertain; do not load the entire history. Keep learned procedures under
-`{{ vocab.memory }}/skills/`, separate from the provided skills.
+Memory under `{{ vocab.memory }}/` belongs to this experiment session. It survives
+resume and compaction but is not copied into later sessions. At start or after
+compaction, read `{{ vocab.memory }}/PROGRESS.md` and retrieve only matching notes.
+Open linked evidence when applicability or outcome is uncertain; do not load the
+entire history. Cross-session executable procedures belong in `skill-library/`, as
+described by [continual-learning](../continual-learning/SKILL.md).
 
 ## Record successful tips immediately
 
@@ -25,12 +25,10 @@ uncertain; do not load the entire history. Keep learned procedures under
 
 ## Distill
 
-Promote a tip to `{{ vocab.memory }}/skills/<slug>/SKILL.md` plus `evidence.json` when
-it shows a reusable motion, contact strategy, recovery, or completed procedure. Keep
-procedures short; keep attempt-specific values and evidence links in `evidence.json`.
-Update `{{ vocab.memory }}/INDEX.md` with the skill path, tags, confirmation level and
-date. Current perception and the live tool schemas take precedence over a learned
-skill; revise the skill when later evidence contradicts it.
+When a tip becomes an automated, reusable motion, contact strategy, recovery, or
+completed procedure, package it in `skill-library/` with executable code and run
+evidence. Keep attempt-specific notes in memory. Current perception and live tool
+schemas take precedence over all notes and learned skills.
 
 Read [references/format.md](references/format.md) only when creating or updating a
 learned skill.

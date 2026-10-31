@@ -79,18 +79,17 @@ class ClickBellOutcomeController:
                 "visual_reason": f"Operator visual confirmation: {reply}",
             }
         )
+        task_recording = (
+            motion["recording"] if gripper is None else gripper["recording"]
+        )
         result = {
             "schema_version": 1,
             "kind": "click_bell_operator_visual_result",
             "press_id": press_id,
             "motion_receipt": motion["receipt"],
-            "recording": motion["recording"],
+            "recording": task_recording,
+            "task_recording": task_recording,
             "gripper": gripper,
-            "task_recordings": [
-                *([] if gripper is None else gripper["recordings"][:1]),
-                motion["recording"],
-                *([] if gripper is None else gripper["recordings"][1:]),
-            ],
             "operator_request_id": request_id,
             "operator_reply": reply,
             "operator": answered["answer"].get("by"),
